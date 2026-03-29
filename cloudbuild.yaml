@@ -2,6 +2,12 @@ substitutions:
   _REGION: us-central1
   _SERVICE: freenotes-api
   _AR_REPO: freenotes
+  # Must match your OAuth Web client ID (same as Secret Manager GOOGLE_CLIENT_ID).
+  _VITE_GOOGLE_CLIENT_ID: ""
+  # GCS bucket for attachments (create with infra/gcp/setup.sh or gsutil mb).
+  _GCS_BUCKET: freenotes-491520-freenotes-data
+
+timeout: 1800s
 
 options:
   logging: CLOUD_LOGGING_ONLY
@@ -11,6 +17,8 @@ steps:
     name: gcr.io/cloud-builders/docker
     args:
       - build
+      - "--build-arg"
+      - "VITE_GOOGLE_CLIENT_ID=${_VITE_GOOGLE_CLIENT_ID}"
       - "-t"
       - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:${SHORT_SHA}"
       - "-t"
@@ -23,6 +31,27 @@ steps:
       - push
       - "--all-tags"
       - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}"
+
+  # Deploy to Cloud Run and set FRONTEND_ORIGIN to the service URL (CORS + cookies).
+  # Requires Cloud Build SA: roles/run.admin, roles/iam.serviceAccountUser (on Run runtime SA).
+  - id: deploy-cloud-run
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        gcloud run deploy "${_SERVICE}" \
+          --image "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:${SHORT_SHA}" \
+          --region "${_REGION}" \
+          --platform managed \
+          --allow-unauthenticated \
+          --service-account "freenotes-api@${PROJECT_ID}.iam.gserviceaccount.com" \
+          --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GCS_BUCKET=${_GCS_BUCKET},NODE_ENV=production" \
+          --set-secrets "SESSION_SECRET=SESSION_SECRET:latest,GOOGLE_CLIENT_ID=GOOGLE_CLIENT_ID:latest"
+        URL=$$(gcloud run services describe "${_SERVICE}" --region="${_REGION}" --format='value(status.url)')
+        gcloud run services update "${_SERVICE}" --region="${_REGION}" \
+          --update-env-vars FRONTEND_ORIGIN=$$URL
 
 images:
   - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:${SHORT_SHA}"

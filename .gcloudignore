@@ -1,0 +1,11 @@
+# Smaller/faster context for `gcloud builds submit` (GitHub triggers clone the full repo).
+.git
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+apps/api/data
+**/*.log
+.DS_Store
+coverage
+.turbo

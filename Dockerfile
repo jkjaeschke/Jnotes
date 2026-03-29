@@ -13,6 +13,10 @@ COPY packages/shared packages/shared
 COPY apps/api apps/api
 COPY apps/web apps/web
 
+# Required for Google Sign-In in the built SPA (same value as GOOGLE_CLIENT_ID at runtime).
+ARG VITE_GOOGLE_CLIENT_ID=""
+ENV VITE_GOOGLE_CLIENT_ID=$VITE_GOOGLE_CLIENT_ID
+
 RUN npm run build --workspace=@freenotes/web
 RUN npm run build --workspace=@freenotes/api
 
