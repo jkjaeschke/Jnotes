@@ -1,5 +1,13 @@
-const KEY_NOTEBOOK = "freenotes:lastNotebookId";
-const KEY_NOTE = "freenotes:lastNoteId";
+const LEGACY_NOTEBOOK = "freenotes:lastNotebookId";
+const LEGACY_NOTE = "freenotes:lastNoteId";
+
+function keyNotebook(userId: string) {
+  return `freenotes:u:${userId}:lastNotebookId`;
+}
+
+function keyNote(userId: string) {
+  return `freenotes:u:${userId}:lastNoteId`;
+}
 
 function safeGet(key: string): string | null {
   try {
@@ -18,18 +26,39 @@ function safeSet(key: string, value: string | null) {
   }
 }
 
-export function readLastNotebookId(): string | null {
-  return safeGet(KEY_NOTEBOOK);
+/** One-time migration from pre–per-user keys. */
+function migrateLegacyNotebook(userId: string): void {
+  const legacy = safeGet(LEGACY_NOTEBOOK);
+  if (!legacy) return;
+  if (!safeGet(keyNotebook(userId))) {
+    safeSet(keyNotebook(userId), legacy);
+  }
+  safeSet(LEGACY_NOTEBOOK, null);
 }
 
-export function writeLastNotebookId(id: string | null) {
-  safeSet(KEY_NOTEBOOK, id);
+function migrateLegacyNote(userId: string): void {
+  const legacy = safeGet(LEGACY_NOTE);
+  if (!legacy) return;
+  if (!safeGet(keyNote(userId))) {
+    safeSet(keyNote(userId), legacy);
+  }
+  safeSet(LEGACY_NOTE, null);
 }
 
-export function readLastNoteId(): string | null {
-  return safeGet(KEY_NOTE);
+export function readLastNotebookId(userId: string): string | null {
+  migrateLegacyNotebook(userId);
+  return safeGet(keyNotebook(userId));
 }
 
-export function writeLastNoteId(id: string | null) {
-  safeSet(KEY_NOTE, id);
+export function writeLastNotebookId(userId: string, id: string | null) {
+  safeSet(keyNotebook(userId), id);
+}
+
+export function readLastNoteId(userId: string): string | null {
+  migrateLegacyNote(userId);
+  return safeGet(keyNote(userId));
+}
+
+export function writeLastNoteId(userId: string, id: string | null) {
+  safeSet(keyNote(userId), id);
 }

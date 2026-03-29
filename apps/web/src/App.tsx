@@ -74,6 +74,7 @@ export default function App() {
           index
           element={
             <MainNotes
+              userId={user.id}
               googleToken={googleToken}
               refreshKey={nbKey}
               onNotebooksChanged={() => setNbKey((k) => k + 1)}

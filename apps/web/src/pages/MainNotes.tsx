@@ -76,12 +76,14 @@ function sortNotesNewestFirst<T extends { id: string; updatedAt?: string; create
 }
 
 type Props = {
+  /** Logged-in user; used to scope last notebook/note in localStorage. */
+  userId: string;
   googleToken: string | null;
   refreshKey: number;
   onNotebooksChanged: () => void;
 };
 
-export function MainNotes({ googleToken, refreshKey, onNotebooksChanged }: Props) {
+export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged }: Props) {
   const [searchParams, setSearchParams] = useSearchParams();
   const { isMobile } = useWorkspaceOutlet();
   const [libraryCollapsed, setLibraryCollapsed] = useState(() => {
@@ -281,13 +283,13 @@ export function MainNotes({ googleToken, refreshKey, onNotebooksChanged }: Props
       setActiveNb(fromUrl);
       return;
     }
-    const storedNb = readLastNotebookId();
+    const storedNb = readLastNotebookId(userId);
     if (storedNb && notebooks.some((n) => n.id === storedNb)) {
       setActiveNb(storedNb);
       return;
     }
     setActiveNb(notebooks[0]!.id);
-  }, [notebooks, activeNb, searchParams]);
+  }, [notebooks, activeNb, searchParams, userId]);
 
   useEffect(() => {
     window.localStorage.setItem(LIB_COLLAPSED_KEY, libraryCollapsed ? "1" : "0");
@@ -305,12 +307,12 @@ export function MainNotes({ googleToken, refreshKey, onNotebooksChanged }: Props
   }, [isMobile, activeNote?.id, activeNb]);
 
   useEffect(() => {
-    writeLastNotebookId(activeNb);
-  }, [activeNb]);
+    if (activeNb) writeLastNotebookId(userId, activeNb);
+  }, [activeNb, userId]);
 
   useEffect(() => {
-    if (activeNote?.id) writeLastNoteId(activeNote.id);
-  }, [activeNote?.id]);
+    if (activeNote?.id) writeLastNoteId(userId, activeNote.id);
+  }, [activeNote?.id, userId]);
 
   useEffect(() => {
     void loadLibrary().catch((e) => setErr(String(e)));
@@ -389,13 +391,13 @@ export function MainNotes({ googleToken, refreshKey, onNotebooksChanged }: Props
 
     if (activeNote && notesSorted.some((n) => n.id === activeNote.id)) return;
 
-    const stored = readLastNoteId();
+    const stored = readLastNoteId(userId);
     if (stored && notesSorted.some((n) => n.id === stored)) {
       setActiveNote(notesSorted.find((n) => n.id === stored)!);
       return;
     }
-    if (stored) writeLastNoteId(null);
-  }, [activeNb, notesSorted, searchParams, activeNote]);
+    if (stored) writeLastNoteId(userId, null);
+  }, [activeNb, notesSorted, searchParams, activeNote, userId]);
 
   useEffect(() => {
     if (!activeNote || !editor) return;
@@ -470,6 +472,8 @@ export function MainNotes({ googleToken, refreshKey, onNotebooksChanged }: Props
         if (activeNb === nb.id) {
           setActiveNote(null);
           setActiveNb(null);
+          writeLastNotebookId(userId, null);
+          writeLastNoteId(userId, null);
         }
         onNotebooksChanged();
         await loadLibrary();
@@ -477,7 +481,7 @@ export function MainNotes({ googleToken, refreshKey, onNotebooksChanged }: Props
         setErr(String(e));
       }
     },
-    [activeNb, googleToken, loadLibrary, onNotebooksChanged]
+    [activeNb, googleToken, loadLibrary, onNotebooksChanged, userId]
   );
 
   const newNote = useCallback(async () => {
