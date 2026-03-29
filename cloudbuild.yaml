@@ -17,18 +17,21 @@ availableSecrets:
       env: VITE_GOOGLE_CLIENT_ID
 
 steps:
+  # Must use bash so $VITE_GOOGLE_CLIENT_ID expands from secretEnv. Plain `args:` are not
+  # shell-expanded — Docker was receiving the literal string "$VITE_GOOGLE_CLIENT_ID".
   - id: build-image
     name: gcr.io/cloud-builders/docker
     secretEnv: ["VITE_GOOGLE_CLIENT_ID"]
+    entrypoint: bash
     args:
-      - build
-      - "--build-arg"
-      - "VITE_GOOGLE_CLIENT_ID=$$VITE_GOOGLE_CLIENT_ID"
-      - "-t"
-      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:${SHORT_SHA}"
-      - "-t"
-      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:latest"
-      - "."
+      - -c
+      - |
+        set -euo pipefail
+        docker build \
+          --build-arg "VITE_GOOGLE_CLIENT_ID=$$VITE_GOOGLE_CLIENT_ID" \
+          -t "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:${SHORT_SHA}" \
+          -t "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:latest" \
+          .
 
   - id: push-image
     name: gcr.io/cloud-builders/docker

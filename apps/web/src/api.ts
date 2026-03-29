@@ -17,6 +17,18 @@ export async function apiGet<T>(path: string, googleToken?: string | null): Prom
   return res.json() as Promise<T>;
 }
 
+/** Same as apiGet but returns null on 401 (no session) instead of throwing — avoids noisy errors on the login page. */
+export async function apiGetOptional<T>(path: string, googleToken?: string | null): Promise<T | null> {
+  const headers: Record<string, string> = {};
+  if (googleToken) {
+    headers.Authorization = `Bearer ${googleToken}`;
+  }
+  const res = await fetch(path, { credentials: "include", headers });
+  if (res.status === 401) return null;
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json() as Promise<T>;
+}
+
 export async function apiSend<T>(
   path: string,
   method: string,

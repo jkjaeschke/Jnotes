@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
-import { apiGet } from "./api.js";
+import { apiGetOptional } from "./api.js";
 import { LoginPage } from "./pages/LoginPage.js";
 import { Workspace } from "./pages/Workspace.js";
 import { MainNotes } from "./pages/MainNotes.js";
@@ -16,8 +16,8 @@ export default function App() {
 
   const refreshMe = useCallback(async (token?: string | null) => {
     try {
-      const r = await apiGet<{ user: User }>("/api/me", token ?? googleToken);
-      setUser(r.user);
+      const r = await apiGetOptional<{ user: User }>("/api/me", token ?? googleToken);
+      setUser(r?.user ?? null);
     } catch {
       setUser(null);
     }
