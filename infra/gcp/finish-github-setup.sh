@@ -41,9 +41,8 @@ if gcloud builds triggers describe "${TRIGGER_NAME}" --region="${REGION}" --proj
   exit 0
 fi
 
-VITE="$(gcloud secrets versions access latest --secret=GOOGLE_CLIENT_ID --project="${PROJECT_ID}")"
-if [[ -z "${VITE}" ]]; then
-  echo "GOOGLE_CLIENT_ID secret is empty."
+if ! gcloud secrets describe GOOGLE_CLIENT_ID --project="${PROJECT_ID}" &>/dev/null; then
+  echo "Secret GOOGLE_CLIENT_ID is missing. Create it in Secret Manager (OAuth Web client ID)."
   exit 1
 fi
 
@@ -53,8 +52,7 @@ gcloud builds triggers create github "${TRIGGER_NAME}" \
   --branch-pattern='^main$' \
   --build-config=cloudbuild.yaml \
   --region="${REGION}" \
-  --project="${PROJECT_ID}" \
-  --substitutions="_VITE_GOOGLE_CLIENT_ID=${VITE}"
+  --project="${PROJECT_ID}"
 
 echo ""
 echo "Done. Push to main to run a build, or run:"

@@ -2,8 +2,6 @@ substitutions:
   _REGION: us-central1
   _SERVICE: freenotes-api
   _AR_REPO: freenotes
-  # Must match your OAuth Web client ID (same as Secret Manager GOOGLE_CLIENT_ID).
-  _VITE_GOOGLE_CLIENT_ID: ""
   # GCS bucket for attachments (create with infra/gcp/setup.sh or gsutil mb).
   _GCS_BUCKET: freenotes-491520-freenotes-data
 
@@ -12,13 +10,20 @@ timeout: 1800s
 options:
   logging: CLOUD_LOGGING_ONLY
 
+# Same value as runtime GOOGLE_CLIENT_ID — baked into the SPA at docker build time.
+availableSecrets:
+  secretManager:
+    - versionName: projects/${PROJECT_ID}/secrets/GOOGLE_CLIENT_ID/versions/latest
+      env: VITE_GOOGLE_CLIENT_ID
+
 steps:
   - id: build-image
     name: gcr.io/cloud-builders/docker
+    secretEnv: ["VITE_GOOGLE_CLIENT_ID"]
     args:
       - build
       - "--build-arg"
-      - "VITE_GOOGLE_CLIENT_ID=${_VITE_GOOGLE_CLIENT_ID}"
+      - "VITE_GOOGLE_CLIENT_ID=$$VITE_GOOGLE_CLIENT_ID"
       - "-t"
       - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:${SHORT_SHA}"
       - "-t"

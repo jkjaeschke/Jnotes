@@ -40,7 +40,7 @@ This grants the default Cloud Build service account (`PROJECT_NUMBER@cloudbuild.
      --format='value(installationState.stage)'
    ```
 
-4. Link the repo and create the push trigger (reads `GOOGLE_CLIENT_ID` from Secret Manager for `_VITE_GOOGLE_CLIENT_ID`):
+4. Link the repo and create the push trigger (`cloudbuild.yaml` reads `GOOGLE_CLIENT_ID` from Secret Manager for the web build):
 
    ```bash
    ./infra/gcp/finish-github-setup.sh
@@ -55,10 +55,9 @@ This grants the default Cloud Build service account (`PROJECT_NUMBER@cloudbuild.
    - **Event:** Push to a branch → `main` (or your default branch).
    - **Configuration:** Cloud Build configuration file (yaml or json).
    - **Location:** Repository root, file `cloudbuild.yaml`.
-5. **Substitution variables** (required for the web build):
-   - `_VITE_GOOGLE_CLIENT_ID` = your OAuth Web client ID (must match Secret `GOOGLE_CLIENT_ID`).
+5. **Substitutions** are optional: the Docker build injects `VITE_GOOGLE_CLIENT_ID` from the **Secret Manager** secret `GOOGLE_CLIENT_ID` (see `availableSecrets` in `cloudbuild.yaml`). Ensure that secret exists.
 
-   Optional overrides:
+   Optional overrides in the trigger:
 
    | Variable              | Default (in `cloudbuild.yaml`)   |
    |-----------------------|----------------------------------|
@@ -83,8 +82,9 @@ Push a commit to `main` and open [Cloud Build history](https://console.cloud.goo
 
 ```bash
 gcloud config set project freenotes-491520
-gcloud builds submit --config=cloudbuild.yaml \
-  --substitutions=_VITE_GOOGLE_CLIENT_ID=YOUR_CLIENT_ID.apps.googleusercontent.com
+gcloud builds submit --config=cloudbuild.yaml
 ```
+
+(`GOOGLE_CLIENT_ID` must exist in Secret Manager; the build reads it via `availableSecrets`.)
 
 `.gcloudignore` reduces upload size for `gcloud builds submit`; GitHub triggers clone the full repository.
