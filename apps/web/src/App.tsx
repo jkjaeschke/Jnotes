@@ -53,10 +53,10 @@ export default function App() {
           )
         }
       />
-      <Route
-        path="/"
-        element={
-          user ? (
+      {user ? (
+        <Route
+          path="/"
+          element={
             <Workspace
               user={user}
               googleToken={googleToken}
@@ -65,28 +65,28 @@ export default function App() {
                 setGoogleToken(null);
               }}
             />
-          ) : (
-            <Navigate to="/login" replace />
-          )
-        }
-      >
-        <Route
-          index
-          element={
-            <MainNotes
-              userId={user.id}
-              googleToken={googleToken}
-              refreshKey={nbKey}
-              onNotebooksChanged={() => setNbKey((k) => k + 1)}
-            />
           }
-        />
-        <Route path="search" element={<SearchPage googleToken={googleToken} />} />
-        <Route
-          path="import"
-          element={<ImportPage googleToken={googleToken} onDone={() => setNbKey((k) => k + 1)} />}
-        />
-      </Route>
+        >
+          <Route
+            index
+            element={
+              <MainNotes
+                userId={user.id}
+                googleToken={googleToken}
+                refreshKey={nbKey}
+                onNotebooksChanged={() => setNbKey((k) => k + 1)}
+              />
+            }
+          />
+          <Route path="search" element={<SearchPage googleToken={googleToken} />} />
+          <Route
+            path="import"
+            element={<ImportPage googleToken={googleToken} onDone={() => setNbKey((k) => k + 1)} />}
+          />
+        </Route>
+      ) : (
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      )}
     </Routes>
   );
 }

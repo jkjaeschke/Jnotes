@@ -30,6 +30,13 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* `zoom` on :root breaks or blanks the page on some mobile browsers (esp. Safari). */
+@media (max-width: 960px) {
+  :root {
+    zoom: 1;
+  }
+}
+
 * {
   box-sizing: border-box;
 }
