@@ -78,6 +78,10 @@ export function Workspace({ user, googleToken, onLogout }: Props) {
         <div className="sidebar-brand">
           <div className="sidebar-brand-title">Notes</div>
           <div className="sidebar-email">{user.email}</div>
+          <button type="button" className="sidebar-signout" onClick={() => void logout()}>
+            <IconSignOut />
+            Sign out
+          </button>
         </div>
         <nav className="sidebar-nav">
           <NavLink to="/" end className={navLink}>
@@ -93,12 +97,6 @@ export function Workspace({ user, googleToken, onLogout }: Props) {
             Import .enex
           </NavLink>
         </nav>
-        <div className="sidebar-footer">
-          <button type="button" className="btn btn-ghost" onClick={() => void logout()}>
-            <IconSignOut />
-            Sign out
-          </button>
-        </div>
       </aside>
       <div className="app-main">
         <Outlet />

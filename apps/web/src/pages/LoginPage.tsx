@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { User } from "../App.js";
 import { apiSend } from "../api.js";
 
@@ -26,6 +26,20 @@ type Props = {
 
 export function LoginPage({ onAuthed }: Props) {
   const btnRef = useRef<HTMLDivElement>(null);
+
+  const signOutFreeNotes = useCallback(async () => {
+    try {
+      await apiSend("/api/auth/logout", "POST");
+    } catch {
+      /* still reload to drop client state */
+    }
+    try {
+      window.google?.accounts?.id?.disableAutoSelect?.();
+    } catch {
+      /* ignore */
+    }
+    window.location.reload();
+  }, []);
 
   useEffect(() => {
     if (!clientId) return;
@@ -69,7 +83,14 @@ export function LoginPage({ onAuthed }: Props) {
             Set <code>VITE_GOOGLE_CLIENT_ID</code> in <code>apps/web/.env</code>.
           </p>
         )}
-        <div ref={btnRef} style={{ marginTop: "1.5rem" }} />
+        <p className="muted login-session-hint">
+          <button type="button" className="link-button" onClick={() => void signOutFreeNotes()}>
+            Sign out of FreeNotes
+          </button>{" "}
+          to clear your session and try again.
+        </p>
+        {/* Reserve height so the Google iframe does not push the hint off-screen after load */}
+        <div ref={btnRef} className="login-google-slot" />
       </div>
     </div>
   );
