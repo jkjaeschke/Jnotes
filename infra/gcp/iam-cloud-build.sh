@@ -17,10 +17,12 @@ fi
 
 PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
 CB_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
+CB_P4SA="service-${PROJECT_NUMBER}@gcp-sa-cloudbuild.iam.gserviceaccount.com"
 RUN_SA="freenotes-api@${PROJECT_ID}.iam.gserviceaccount.com"
 
 echo "Project: ${PROJECT_ID}"
 echo "Cloud Build SA: ${CB_SA}"
+echo "Cloud Build P4SA (GitHub OAuth tokens): ${CB_P4SA}"
 echo "Cloud Run runtime SA: ${RUN_SA}"
 echo ""
 
@@ -48,6 +50,13 @@ gcloud iam service-accounts add-iam-policy-binding "${RUN_SA}" \
   --member="serviceAccount:${CB_SA}" \
   --role="roles/iam.serviceAccountUser" \
   --project="${PROJECT_ID}" \
+  --quiet
+
+# Required for GitHub "2nd gen" connection OAuth (stores token in Secret Manager).
+echo "Grant roles/secretmanager.admin to Cloud Build P4SA (GitHub connection)…"
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  --member="serviceAccount:${CB_P4SA}" \
+  --role="roles/secretmanager.admin" \
   --quiet
 
 echo ""

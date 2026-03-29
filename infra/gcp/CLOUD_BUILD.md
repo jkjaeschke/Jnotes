@@ -20,9 +20,33 @@ gcloud config set project freenotes-491520
 ./infra/gcp/iam-cloud-build.sh
 ```
 
-This grants the default Cloud Build service account (`PROJECT_NUMBER@cloudbuild.gserviceaccount.com`) permission to push images, deploy Cloud Run, read secrets, and attach the runtime service account `freenotes-api@freenotes-491520.iam.gserviceaccount.com`.
+This grants the default Cloud Build service account (`PROJECT_NUMBER@cloudbuild.gserviceaccount.com`) permission to push images, deploy Cloud Run, read secrets, and attach the runtime service account `freenotes-api@freenotes-491520.iam.gserviceaccount.com`. It also grants the **Cloud Build P4SA** (`service-PROJECT_NUMBER@gcp-sa-cloudbuild.iam.gserviceaccount.com`) `roles/secretmanager.admin`, which is **required** so Google can store the GitHub OAuth token when you create a GitHub connection.
 
-## Connect GitHub and create a trigger
+## Connect GitHub (CLI) and finish the trigger
+
+1. Create a connection (prints an OAuth URL — open it in your browser and sign in to GitHub):
+
+   ```bash
+   gcloud config set project freenotes-491520
+   gcloud builds connections create github jnotes-github --region=us-central1
+   ```
+
+2. In GitHub, **install the Google Cloud Build** app for your account/org and grant access to **jkjaeschke/Jnotes** when prompted.
+
+3. Wait until the connection reaches `COMPLETE`:
+
+   ```bash
+   gcloud builds connections describe jnotes-github --region=us-central1 \
+     --format='value(installationState.stage)'
+   ```
+
+4. Link the repo and create the push trigger (reads `GOOGLE_CLIENT_ID` from Secret Manager for `_VITE_GOOGLE_CLIENT_ID`):
+
+   ```bash
+   ./infra/gcp/finish-github-setup.sh
+   ```
+
+## Connect GitHub and create a trigger (console)
 
 1. Open [Cloud Build → Repositories / Connections](https://console.cloud.google.com/cloud-build/repositories/2nd-gen?project=freenotes-491520) (or **Triggers** → **Connect repository**).
 2. Connect **GitHub** (install the Google Cloud Build app for your org/user if prompted).
