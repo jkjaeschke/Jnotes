@@ -1,0 +1,15 @@
+{
+  "name": "freenotes",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace=@freenotes/web && npm run build --workspace=@freenotes/api",
+    "dev": "concurrently -n web,api -c blue,green \"npm run dev --workspace=@freenotes/web\" \"npm run dev --workspace=@freenotes/api\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

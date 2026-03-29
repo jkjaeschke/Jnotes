@@ -1,0 +1,91 @@
+import { useCallback, useEffect, useState } from "react";
+import { Navigate, Route, Routes } from "react-router-dom";
+import { apiGet } from "./api.js";
+import { LoginPage } from "./pages/LoginPage.js";
+import { Workspace } from "./pages/Workspace.js";
+import { MainNotes } from "./pages/MainNotes.js";
+import { SearchPage } from "./pages/SearchPage.js";
+import { ImportPage } from "./pages/ImportPage.js";
+
+export type User = { id: string; email: string };
+
+export default function App() {
+  const [user, setUser] = useState<User | null | undefined>(undefined);
+  const [googleToken, setGoogleToken] = useState<string | null>(null);
+  const [nbKey, setNbKey] = useState(0);
+
+  const refreshMe = useCallback(async (token?: string | null) => {
+    try {
+      const r = await apiGet<{ user: User }>("/api/me", token ?? googleToken);
+      setUser(r.user);
+    } catch {
+      setUser(null);
+    }
+  }, [googleToken]);
+
+  useEffect(() => {
+    void refreshMe(null);
+  }, [refreshMe]);
+
+  if (user === undefined) {
+    return (
+      <div className="login-page muted" aria-busy="true">
+        Loading…
+      </div>
+    );
+  }
+
+  return (
+    <Routes>
+      <Route
+        path="/login"
+        element={
+          user ? (
+            <Navigate to="/" replace />
+          ) : (
+            <LoginPage
+              onAuthed={(u, idToken) => {
+                setUser(u);
+                setGoogleToken(idToken);
+                void refreshMe(idToken);
+              }}
+            />
+          )
+        }
+      />
+      <Route
+        path="/"
+        element={
+          user ? (
+            <Workspace
+              user={user}
+              googleToken={googleToken}
+              onLogout={() => {
+                setUser(null);
+                setGoogleToken(null);
+              }}
+            />
+          ) : (
+            <Navigate to="/login" replace />
+          )
+        }
+      >
+        <Route
+          index
+          element={
+            <MainNotes
+              googleToken={googleToken}
+              refreshKey={nbKey}
+              onNotebooksChanged={() => setNbKey((k) => k + 1)}
+            />
+          }
+        />
+        <Route path="search" element={<SearchPage googleToken={googleToken} />} />
+        <Route
+          path="import"
+          element={<ImportPage googleToken={googleToken} onDone={() => setNbKey((k) => k + 1)} />}
+        />
+      </Route>
+    </Routes>
+  );
+}

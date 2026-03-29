@@ -1,0 +1,29 @@
+substitutions:
+  _REGION: us-central1
+  _SERVICE: freenotes-api
+  _AR_REPO: freenotes
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - id: build-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:${SHORT_SHA}"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:latest"
+      - "."
+
+  - id: push-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - "--all-tags"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}"
+
+images:
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:${SHORT_SHA}"
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:latest"

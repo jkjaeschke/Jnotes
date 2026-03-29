@@ -1,0 +1,11 @@
+node_modules
+dist
+.env
+.env.local
+*.log
+.DS_Store
+coverage
+.turbo
+
+# Local blob storage (imports, attachments); use GCS or empty dir in prod
+apps/api/data/

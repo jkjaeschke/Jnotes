@@ -1,0 +1,11 @@
+node_modules
+**/node_modules
+.git
+.env
+.env.*
+**/*.log
+apps/web/dist
+apps/api/dist
+packages/shared/dist
+data
+.DS_Store
