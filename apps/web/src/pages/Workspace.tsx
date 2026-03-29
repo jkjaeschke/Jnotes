@@ -1,7 +1,11 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import type { User } from "../App.js";
 import { apiSend } from "../api.js";
+import { useMediaQuery } from "../hooks/useMediaQuery.js";
+import { WorkspaceOutletContext } from "../workspaceOutletContext.js";
+
+const NAV_COLLAPSED_KEY = "freenotes-nav-collapsed";
 
 function IconNotes({ className }: { className?: string }) {
   return (
@@ -62,6 +66,33 @@ type Props = {
 
 export function Workspace({ user, googleToken, onLogout }: Props) {
   const navigate = useNavigate();
+  const isMobile = useMediaQuery("(max-width: 960px)");
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [navCollapsed, setNavCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(NAV_COLLAPSED_KEY) === "1";
+  });
+
+  useEffect(() => {
+    window.localStorage.setItem(NAV_COLLAPSED_KEY, navCollapsed ? "1" : "0");
+  }, [navCollapsed]);
+
+  useEffect(() => {
+    if (!isMobile) setMobileNavOpen(false);
+  }, [isMobile]);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMobileNavOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mobileNavOpen]);
+
+  useEffect(() => {
+    if (isMobile) setNavCollapsed(false);
+  }, [isMobile]);
 
   const logout = useCallback(async () => {
     await apiSend("/api/auth/logout", "POST", undefined, googleToken);
@@ -72,35 +103,94 @@ export function Workspace({ user, googleToken, onLogout }: Props) {
   const navLink = ({ isActive }: { isActive: boolean }) =>
     isActive ? "sidebar-nav-link active" : "sidebar-nav-link";
 
-  return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="sidebar-brand">
-          <div className="sidebar-brand-title">Notes</div>
-          <div className="sidebar-email">{user.email}</div>
-          <button type="button" className="sidebar-signout" onClick={() => void logout()}>
-            <IconSignOut />
-            Sign out
-          </button>
+  const openMobileNav = useCallback(() => setMobileNavOpen(true), []);
+  const closeMobileNav = useCallback(() => setMobileNavOpen(false), []);
+
+  const sidebarInner = (
+    <>
+      {!isMobile && (
+        <div className="sidebar-panel-collapse">
+          {navCollapsed ? (
+            <button
+              type="button"
+              className="panel-collapse-toggle"
+              onClick={() => setNavCollapsed(false)}
+              aria-label="Expand menu"
+              title="Expand menu"
+            >
+              »
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="panel-collapse-toggle"
+              onClick={() => setNavCollapsed(true)}
+              aria-label="Collapse menu"
+              title="Collapse menu"
+            >
+              «
+            </button>
+          )}
         </div>
-        <nav className="sidebar-nav">
-          <NavLink to="/" end className={navLink}>
-            <IconNotes />
-            Notes
-          </NavLink>
-          <NavLink to="/search" className={navLink}>
-            <IconSearch />
-            Search
-          </NavLink>
-          <NavLink to="/import" className={navLink}>
-            <IconImport />
-            Import .enex
-          </NavLink>
-        </nav>
-      </aside>
-      <div className="app-main">
-        <Outlet />
+      )}
+      <div className="sidebar-brand">
+        <div className="sidebar-brand-title">Notes</div>
+        <div className="sidebar-email">{user.email}</div>
+        <button type="button" className="sidebar-signout" onClick={() => void logout()}>
+          <IconSignOut />
+          <span className="sidebar-nav-label">Sign out</span>
+        </button>
       </div>
-    </div>
+      <nav className="sidebar-nav">
+        <NavLink to="/" end className={navLink} onClick={closeMobileNav}>
+          <IconNotes />
+          <span className="sidebar-nav-label">Notes</span>
+        </NavLink>
+        <NavLink to="/search" className={navLink} onClick={closeMobileNav}>
+          <IconSearch />
+          <span className="sidebar-nav-label">Search</span>
+        </NavLink>
+        <NavLink to="/import" className={navLink} onClick={closeMobileNav}>
+          <IconImport />
+          <span className="sidebar-nav-label">Import .enex</span>
+        </NavLink>
+      </nav>
+    </>
+  );
+
+  return (
+    <WorkspaceOutletContext.Provider value={{ isMobile, openMobileNav }}>
+      <div className={`app-shell${navCollapsed && !isMobile ? " nav-collapsed" : ""}`}>
+        {isMobile && mobileNavOpen && (
+          <button
+            type="button"
+            className="sidebar-drawer-backdrop"
+            aria-label="Close menu"
+            onClick={closeMobileNav}
+          />
+        )}
+        <aside
+          className={`sidebar${isMobile ? " sidebar-mobile" : ""}${isMobile && mobileNavOpen ? " sidebar-mobile-open" : ""}`}
+          aria-hidden={isMobile ? !mobileNavOpen : undefined}
+        >
+          {sidebarInner}
+        </aside>
+
+        {isMobile && (
+          <header className="mobile-app-bar">
+            <button type="button" className="mobile-app-bar-menu" onClick={openMobileNav} aria-label="Open menu">
+              <span className="mobile-app-bar-icon" aria-hidden>
+                ☰
+              </span>
+            </button>
+            <span className="mobile-app-bar-title">FreeNotes</span>
+          </header>
+        )}
+
+        <div className="app-main">
+          <Outlet />
+        </div>
+      </div>
+    </WorkspaceOutletContext.Provider>
   );
 }

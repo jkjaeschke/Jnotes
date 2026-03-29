@@ -16,6 +16,7 @@ import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { useWorkspaceOutlet } from "../workspaceOutletContext.js";
 import { NoteEditorToolbar } from "../components/NoteEditorToolbar.js";
 import { apiGet, apiSend, apiUpload } from "../api.js";
 import {
@@ -29,6 +30,10 @@ import {
   isLikelyImageFile,
 } from "../notesImagePasteDropExtension.js";
 import { FontSize } from "../tiptapFontSize.js";
+
+const LIB_COLLAPSED_KEY = "freenotes-library-collapsed";
+const NOTES_COLLAPSED_KEY = "freenotes-notes-collapsed";
+
 /** A stack groups notebooks (same idea as Evernote “stacks”). */
 type Stack = {
   id: string;
@@ -78,6 +83,17 @@ type Props = {
 
 export function MainNotes({ googleToken, refreshKey, onNotebooksChanged }: Props) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const { isMobile } = useWorkspaceOutlet();
+  const [libraryCollapsed, setLibraryCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(LIB_COLLAPSED_KEY) === "1";
+  });
+  const [notesCollapsed, setNotesCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(NOTES_COLLAPSED_KEY) === "1";
+  });
+  /** Mobile: 0 = library, 1 = note list, 2 = editor */
+  const [mobileStep, setMobileStep] = useState(0);
   const [stacks, setStacks] = useState<Stack[]>([]);
   const [notebooks, setNotebooks] = useState<Notebook[]>([]);
   const [activeNb, setActiveNb] = useState<string | null>(null);
@@ -274,6 +290,21 @@ export function MainNotes({ googleToken, refreshKey, onNotebooksChanged }: Props
   }, [notebooks, activeNb, searchParams]);
 
   useEffect(() => {
+    window.localStorage.setItem(LIB_COLLAPSED_KEY, libraryCollapsed ? "1" : "0");
+  }, [libraryCollapsed]);
+
+  useEffect(() => {
+    window.localStorage.setItem(NOTES_COLLAPSED_KEY, notesCollapsed ? "1" : "0");
+  }, [notesCollapsed]);
+
+  useEffect(() => {
+    if (!isMobile) return;
+    if (activeNote) setMobileStep(2);
+    else if (activeNb) setMobileStep(1);
+    else setMobileStep(0);
+  }, [isMobile, activeNote?.id, activeNb]);
+
+  useEffect(() => {
     writeLastNotebookId(activeNb);
   }, [activeNb]);
 
@@ -372,6 +403,10 @@ export function MainNotes({ googleToken, refreshKey, onNotebooksChanged }: Props
     editor.commands.setContent(activeNote.body || "<p></p>", false);
   }, [activeNote?.id, editor]);
 
+  const goBackMobile = useCallback(() => {
+    setMobileStep((s) => Math.max(0, s - 1));
+  }, []);
+
   const toggleStackCollapsed = useCallback((stackId: string) => {
     setCollapsedStacks((prev) => {
       const next = new Set(prev);
@@ -456,10 +491,11 @@ export function MainNotes({ googleToken, refreshKey, onNotebooksChanged }: Props
       );
       setNotes((prev) => sortNotesNewestFirst([r.note, ...prev]));
       setActiveNote(r.note);
+      if (isMobile) setMobileStep(2);
     } catch (e) {
       setErr(String(e));
     }
-  }, [activeNb, googleToken]);
+  }, [activeNb, googleToken, isMobile]);
 
   const openNoteInNewWindow = useCallback((note: Note) => {
     closeNoteMenus();
@@ -549,6 +585,7 @@ export function MainNotes({ googleToken, refreshKey, onNotebooksChanged }: Props
         onClick={() => {
           setActiveNb(nb.id);
           setActiveNote(null);
+          if (isMobile) setMobileStep(1);
         }}
       >
         {nb.name}
@@ -567,9 +604,66 @@ export function MainNotes({ googleToken, refreshKey, onNotebooksChanged }: Props
     </li>
   );
 
+  const layoutClass = [
+    "notes-layout",
+    !isMobile && libraryCollapsed ? "library-collapsed" : "",
+    !isMobile && notesCollapsed ? "notes-collapsed" : "",
+    isMobile ? `mobile-step-${mobileStep}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const mobileBarTitle =
+    mobileStep === 0
+      ? "Library"
+      : mobileStep === 1
+        ? activeNotebookName || "Notes"
+        : title.trim() || "Untitled";
+
   return (
-    <div className="notes-layout">
+    <div className={layoutClass}>
+      {isMobile && (
+        <div className="notes-mobile-bar">
+          <button
+            type="button"
+            className="notes-mobile-back"
+            onClick={goBackMobile}
+            disabled={mobileStep === 0}
+            aria-label="Back"
+          >
+            ←
+          </button>
+          <span className="notes-mobile-bar-title">{mobileBarTitle}</span>
+        </div>
+      )}
       <aside className="notebooks-panel" aria-label="Stacks and notebooks">
+        {!isMobile && (
+          <div className="panel-collapse-row">
+            {libraryCollapsed ? (
+              <button
+                type="button"
+                className="panel-collapse-toggle"
+                onClick={() => setLibraryCollapsed(false)}
+                aria-label="Expand library"
+                title="Expand library"
+              >
+                »
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="panel-collapse-toggle"
+                onClick={() => setLibraryCollapsed(true)}
+                aria-label="Collapse library"
+                title="Collapse library"
+              >
+                «
+              </button>
+            )}
+          </div>
+        )}
+        {!libraryCollapsed || isMobile ? (
+          <>
         <div className="toolbar library-toolbar">
           <button type="button" className="btn btn-primary btn-block" onClick={() => void newStack()}>
             + New Stack
@@ -658,9 +752,38 @@ export function MainNotes({ googleToken, refreshKey, onNotebooksChanged }: Props
             </button>
           </>
         )}
+          </>
+        ) : null}
       </aside>
 
       <section className="notes-panel" aria-label="Notes in notebook">
+        {!isMobile && (
+          <div className="panel-collapse-row">
+            {notesCollapsed ? (
+              <button
+                type="button"
+                className="panel-collapse-toggle"
+                onClick={() => setNotesCollapsed(false)}
+                aria-label="Expand note list"
+                title="Expand note list"
+              >
+                »
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="panel-collapse-toggle"
+                onClick={() => setNotesCollapsed(true)}
+                aria-label="Collapse note list"
+                title="Collapse note list"
+              >
+                «
+              </button>
+            )}
+          </div>
+        )}
+        {!notesCollapsed || isMobile ? (
+        <>
         {!activeNotebook ? (
           <div className="notes-panel-body">
             <div className="notes-panel-empty">
@@ -700,7 +823,10 @@ export function MainNotes({ googleToken, refreshKey, onNotebooksChanged }: Props
                       type="button"
                       className={`note-item${activeNote?.id === n.id ? " active" : ""}`}
                       aria-current={activeNote?.id === n.id ? "true" : undefined}
-                      onClick={() => setActiveNote(n)}
+                      onClick={() => {
+                        setActiveNote(n);
+                        if (isMobile) setMobileStep(2);
+                      }}
                     >
                       <div style={{ fontWeight: 600 }}>{n.title || "Untitled"}</div>
                     </button>
@@ -761,6 +887,8 @@ export function MainNotes({ googleToken, refreshKey, onNotebooksChanged }: Props
             )}
           </>
         )}
+        </>
+        ) : null}
       </section>
 
       <main className="editor-panel" aria-label="Note editor">
