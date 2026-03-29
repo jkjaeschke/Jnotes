@@ -18,10 +18,12 @@ fi
 PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
 CB_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
 CB_P4SA="service-${PROJECT_NUMBER}@gcp-sa-cloudbuild.iam.gserviceaccount.com"
+COMPUTE_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 RUN_SA="freenotes-api@${PROJECT_ID}.iam.gserviceaccount.com"
 
 echo "Project: ${PROJECT_ID}"
 echo "Cloud Build SA: ${CB_SA}"
+echo "Default Compute SA (often used as Cloud Build trigger service account): ${COMPUTE_SA}"
 echo "Cloud Build P4SA (GitHub OAuth tokens): ${CB_P4SA}"
 echo "Cloud Run runtime SA: ${RUN_SA}"
 echo ""
@@ -43,6 +45,14 @@ bind_project_role "roles/artifactregistry.writer"
 
 # Attach secrets to Cloud Run (--set-secrets)
 bind_project_role "roles/secretmanager.secretAccessor"
+
+# GitHub / 2nd-gen triggers often run builds as the default Compute Engine service account, not
+# @cloudbuild.gserviceaccount.com — required for cloudbuild.yaml availableSecrets (e.g. GOOGLE_CLIENT_ID).
+echo "Grant roles/secretmanager.secretAccessor to ${COMPUTE_SA}…"
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  --member="serviceAccount:${COMPUTE_SA}" \
+  --role="roles/secretmanager.secretAccessor" \
+  --quiet
 
 # Act as the runtime service account when deploying Cloud Run
 echo "Grant iam.serviceAccountUser on ${RUN_SA} to Cloud Build…"
