@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { apiGet, apiUpload } from "../api.js";
+import { apiGet, apiSend, apiUpload } from "../api.js";
 
 type Notebook = { id: string; name: string };
 
@@ -18,6 +18,16 @@ type Props = {
   googleToken: string | null;
   onDone: () => void;
 };
+
+type PresignResponse =
+  | { mode: "multipart" }
+  | {
+      mode: "direct";
+      jobId: string;
+      fileName: string;
+      uploadUrl: string;
+      contentType: string;
+    };
 
 export function ImportPage({ googleToken, onDone }: Props) {
   const navigate = useNavigate();
@@ -61,16 +71,56 @@ export function ImportPage({ googleToken, onDone }: Props) {
     async (f: File | null) => {
       if (!f) return;
       setErr(null);
-      setStatus("Uploading…");
-      const fd = new FormData();
-      if (notebookId) {
-        fd.append("notebookId", notebookId);
-      }
-      fd.append("file", f);
+      setStatus("Preparing upload…");
       try {
-        const r = (await apiUpload("/api/imports", fd, googleToken)) as { job: Job };
-        setStatus(`Job ${r.job.id} queued`);
-        void pollJob(r.job.id);
+        const presign = await apiSend<PresignResponse>(
+          "/api/imports/presign",
+          "POST",
+          { fileName: f.name },
+          googleToken
+        );
+
+        let jobId: string;
+
+        if (presign.mode === "multipart") {
+          setStatus("Uploading…");
+          const fd = new FormData();
+          if (notebookId) {
+            fd.append("notebookId", notebookId);
+          }
+          fd.append("file", f);
+          const r = (await apiUpload("/api/imports", fd, googleToken)) as { job: Job };
+          jobId = r.job.id;
+        } else {
+          setStatus("Uploading to storage…");
+          const putRes = await fetch(presign.uploadUrl, {
+            method: "PUT",
+            body: f,
+            headers: { "Content-Type": presign.contentType },
+          });
+          if (!putRes.ok) {
+            const hint =
+              putRes.status === 0
+                ? " (blocked — check GCS bucket CORS allows your site; see infra/gcs-cors.json)"
+                : "";
+            throw new Error(`Direct upload failed (${putRes.status})${hint}`);
+          }
+          setStatus("Starting import…");
+          const r = await apiSend<{ job: Job }>(
+            "/api/imports/commit",
+            "POST",
+            {
+              jobId: presign.jobId,
+              fileName: presign.fileName,
+              notebookId: notebookId || null,
+            },
+            googleToken
+          );
+          jobId = r.job.id;
+        }
+
+        setStatus(`Job ${jobId} queued`);
+        void pollJob(jobId);
       } catch (e) {
         setErr(String(e));
         setStatus("");

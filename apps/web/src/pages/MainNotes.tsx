@@ -46,6 +46,10 @@ type Notebook = {
   name: string;
   sortOrder: number;
   stackId: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  /** ISO; server sets from latest note in notebook (max created/updated). */
+  lastNoteActivityAt?: string | null;
 };
 
 type Note = {
@@ -73,6 +77,25 @@ function sortNotesNewestFirst<T extends { id: string; updatedAt?: string; create
     if (tb !== ta) return tb - ta;
     return b.id.localeCompare(a.id);
   });
+}
+
+/** Library order: latest note activity in notebook, then notebook timestamps, then manual order. */
+function notebookRecencyMs(nb: Notebook): number {
+  if (nb.lastNoteActivityAt) {
+    const n = Date.parse(nb.lastNoteActivityAt);
+    if (Number.isFinite(n)) return n;
+  }
+  const u = nb.updatedAt ? Date.parse(nb.updatedAt) : NaN;
+  const c = nb.createdAt ? Date.parse(nb.createdAt) : NaN;
+  return Math.max(Number.isFinite(u) ? u : 0, Number.isFinite(c) ? c : 0);
+}
+
+function sortNotebooksForLibrary(a: Notebook, b: Notebook): number {
+  const ta = notebookRecencyMs(a);
+  const tb = notebookRecencyMs(b);
+  if (tb !== ta) return tb - ta;
+  if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+  return a.name.localeCompare(b.name);
 }
 
 type Props = {
@@ -166,9 +189,9 @@ export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged 
       }
     }
     for (const k of Object.keys(by)) {
-      by[k]!.sort((a, b) => a.sortOrder - b.sortOrder);
+      by[k]!.sort(sortNotebooksForLibrary);
     }
-    un.sort((a, b) => a.sortOrder - b.sortOrder);
+    un.sort(sortNotebooksForLibrary);
     return { byStack: by, ungrouped: un };
   }, [notebooks]);
 

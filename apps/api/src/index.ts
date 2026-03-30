@@ -17,10 +17,23 @@ import {
 } from "./auth/middleware.js";
 import * as store from "./data/store.js";
 import { htmlToPlainText } from "./lib/htmlToPlain.js";
-import { createReadStreamSync } from "./lib/storage.js";
+import {
+  createReadStreamSync,
+  gcsObjectExists,
+  signedUploadUrl,
+  usesGcs,
+} from "./lib/storage.js";
 import { processImportJob } from "./services/importEnex.js";
 
 mkdirSync(join(config.localDataDir, "blobs"), { recursive: true });
+
+const ENEX_CONTENT_TYPE = "application/xml";
+
+function parseEnexFileName(raw: string | undefined): string | null {
+  const fn = (raw?.replace(/^.*[/\\]/, "").trim().slice(0, 500) || "export.enex");
+  if (!fn.toLowerCase().endsWith(".enex")) return null;
+  return fn;
+}
 
 const app = Fastify({ logger: true });
 
@@ -336,7 +349,97 @@ app.get("/api/search", authPre, async (request, reply) => {
   return { hits };
 });
 
+/**
+ * When GCS is enabled, large ENEX files must not pass through Cloud Run (32 MiB limit).
+ * Client should use POST /api/imports/presign → PUT to uploadUrl → POST /api/imports/commit.
+ */
+app.post("/api/imports/presign", authPre, async (request, reply) => {
+  const schema = z.object({ fileName: z.string().min(1).max(500) });
+  const parsed = schema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.status(400).send({ error: "Invalid body" });
+  }
+  const fn = parseEnexFileName(parsed.data.fileName);
+  if (!fn) {
+    return reply.status(400).send({ error: "Expected .enex file" });
+  }
+  if (!usesGcs()) {
+    return { mode: "multipart" as const };
+  }
+  const jobId = randomUUID();
+  const key = `imports/${request.user!.id}/${jobId}/${fn}`;
+  const uploadUrl = await signedUploadUrl(key, ENEX_CONTENT_TYPE, 60 * 60 * 1000);
+  return {
+    mode: "direct" as const,
+    jobId,
+    fileName: fn,
+    uploadUrl,
+    contentType: ENEX_CONTENT_TYPE,
+  };
+});
+
+app.post("/api/imports/commit", authPre, async (request, reply) => {
+  if (!usesGcs()) {
+    return reply
+      .status(400)
+      .send({ error: "Direct upload is only available when GCS is configured." });
+  }
+  const schema = z.object({
+    jobId: z.string().uuid(),
+    fileName: z.string().min(1).max(500),
+    notebookId: z.string().nullable().optional(),
+  });
+  const parsed = schema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.status(400).send({ error: "Invalid body" });
+  }
+  const fn = parseEnexFileName(parsed.data.fileName);
+  if (!fn) {
+    return reply.status(400).send({ error: "Expected .enex file" });
+  }
+  let notebookId: string | null = parsed.data.notebookId ?? null;
+  if (notebookId === "") notebookId = null;
+
+  const key = `imports/${request.user!.id}/${parsed.data.jobId}/${fn}`;
+  const existing = await store.getImportJobInternal(parsed.data.jobId);
+  if (existing) {
+    return reply.status(409).send({ error: "Import job already exists" });
+  }
+  const ok = await gcsObjectExists(key);
+  if (!ok) {
+    return reply
+      .status(400)
+      .send({ error: "Upload not found. Finish the direct upload first." });
+  }
+
+  if (notebookId) {
+    const nb = await store.getNotebook(request.user!.id, notebookId);
+    if (!nb) return reply.status(400).send({ error: "Notebook not found" });
+  }
+
+  const job = await store.createImportJob({
+    id: parsed.data.jobId,
+    userId: request.user!.id,
+    gcsStagingKey: key,
+    fileName: fn,
+    notebookId,
+  });
+
+  setImmediate(() => {
+    void processImportJob(parsed.data.jobId);
+  });
+
+  return { job };
+});
+
 app.post("/api/imports", authPre, async (request, reply) => {
+  if (usesGcs()) {
+    return reply.status(400).send({
+      error:
+        "Direct upload required for this deployment. The client should use presign → GCS PUT → commit.",
+    });
+  }
+
   let notebookId: string | null = null;
   let fileName: string | null = null;
   let stagedKey: string | null = null;
@@ -351,8 +454,8 @@ app.post("/api/imports", authPre, async (request, reply) => {
         notebookId = v;
       }
     } else if (part.type === "file" && part.fieldname === "file") {
-      const fn = part.filename ?? "export.enex";
-      if (!fn.toLowerCase().endsWith(".enex")) {
+      const fn = parseEnexFileName(part.filename ?? undefined);
+      if (!fn) {
         return reply.status(400).send({ error: "Expected .enex file" });
       }
       const jobId = randomUUID();

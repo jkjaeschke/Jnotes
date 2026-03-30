@@ -199,14 +199,74 @@ export async function deleteStack(userId: string, id: string) {
   return true;
 }
 
+function noteDocMaxRecencyMs(doc: QueryDocumentSnapshot): number {
+  const d = doc.data()!;
+  const createdAt = noteTimestampToIso(d.createdAt) ?? NOTE_TIME_EPOCH_ISO;
+  const updatedAt = noteTimestampToIso(d.updatedAt) ?? createdAt;
+  return Math.max(noteRecencyMs(createdAt), noteRecencyMs(updatedAt));
+}
+
+/**
+ * List notebooks ordered by most recent note activity (max of note created/updated times per
+ * notebook), then notebook metadata for empty notebooks, with sortOrder/name as tie-breakers.
+ */
 export async function listNotebooks(userId: string) {
   const snap = await db
     .collection("notebooks")
     .where("userId", "==", userId)
     .get();
   const list = snap.docs.map((doc) => notebookFromDoc(doc));
-  list.sort((a, b) => a.sortOrder - b.sortOrder);
-  return list;
+  const notebookIds = new Set(list.map((n) => n.id));
+
+  /** First hit in global updatedAt-desc order = latest note in that notebook. */
+  const lastNoteActivityMs = new Map<string, number>();
+  let lastDoc: QueryDocumentSnapshot | undefined;
+  const pageSize = 400;
+
+  for (;;) {
+    let q = db
+      .collection("notes")
+      .where("userId", "==", userId)
+      .orderBy("updatedAt", "desc")
+      .limit(pageSize);
+    if (lastDoc) q = q.startAfter(lastDoc);
+    const nq = await q.get();
+    if (nq.empty) break;
+    for (const doc of nq.docs) {
+      const nbId = doc.data().notebookId as string;
+      if (!notebookIds.has(nbId)) continue;
+      if (lastNoteActivityMs.has(nbId)) continue;
+      lastNoteActivityMs.set(nbId, noteDocMaxRecencyMs(doc));
+    }
+    if (lastNoteActivityMs.size >= notebookIds.size) break;
+    if (nq.size < pageSize) break;
+    lastDoc = nq.docs[nq.docs.length - 1]!;
+  }
+
+  function notebookActivityMs(nb: (typeof list)[0]): number {
+    const fromNote = lastNoteActivityMs.get(nb.id);
+    if (fromNote !== undefined) return fromNote;
+    return Math.max(noteRecencyMs(nb.updatedAt), noteRecencyMs(nb.createdAt));
+  }
+
+  const enriched = list.map((nb) => {
+    const ms = lastNoteActivityMs.get(nb.id);
+    return {
+      ...nb,
+      lastNoteActivityAt:
+        ms !== undefined ? new Date(ms).toISOString() : null,
+    };
+  });
+
+  enriched.sort((a, b) => {
+    const ta = notebookActivityMs(a);
+    const tb = notebookActivityMs(b);
+    if (tb !== ta) return tb - ta;
+    if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+    return a.name.localeCompare(b.name);
+  });
+
+  return enriched;
 }
 
 export async function nextNotebookSortOrder(

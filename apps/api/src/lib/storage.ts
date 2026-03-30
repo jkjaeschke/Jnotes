@@ -71,6 +71,38 @@ export function createReadStreamSync(key: string): NodeJS.ReadableStream {
   return fsCreateReadStream(localPath(key));
 }
 
+/** Browser PUT to this URL uploads bytes directly to GCS (bypasses Cloud Run’s 32 MiB limit). */
+export async function signedUploadUrl(
+  key: string,
+  contentType: string,
+  expiresMs: number
+): Promise<string> {
+  const gcsClient = getGcs();
+  if (!gcsClient) {
+    throw new Error("signedUploadUrl requires GCS_BUCKET");
+  }
+  const [url] = await gcsClient
+    .bucket(config.gcsBucket)
+    .file(key)
+    .getSignedUrl({
+      version: "v4",
+      action: "write",
+      expires: Date.now() + expiresMs,
+      contentType,
+    });
+  return url;
+}
+
+export async function gcsObjectExists(key: string): Promise<boolean> {
+  const gcsClient = getGcs();
+  if (!gcsClient) return true;
+  const [exists] = await gcsClient
+    .bucket(config.gcsBucket)
+    .file(key)
+    .exists();
+  return exists;
+}
+
 export async function signedDownloadUrl(
   key: string,
   filename: string
