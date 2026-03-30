@@ -50,13 +50,26 @@ export function createNotesImagePasteDropExtension(
           key: new PluginKey("notesImagePasteDrop"),
           props: {
             handleDOMEvents: {
+              dragenter(_view, e) {
+                const ev = e as DragEvent;
+                const dt = ev.dataTransfer;
+                if (!dt) return false;
+                const hasFiles =
+                  (dt.types && Array.from(dt.types).includes("Files")) ||
+                  (dt.files && dt.files.length > 0);
+                if (!hasFiles) return false;
+                ev.preventDefault();
+                dt.dropEffect = "copy";
+                return false;
+              },
               dragover(_view, e) {
                 const ev = e as DragEvent;
                 const dt = ev.dataTransfer;
-                if (!dt?.types?.length) return false;
-                const types = [...dt.types];
+                if (!dt) return false;
+                const types = dt.types ? Array.from(dt.types) : [];
                 const looksLikeFileDrop =
                   types.includes("Files") ||
+                  (dt.files && dt.files.length > 0) ||
                   types.some(
                     (t) =>
                       t.startsWith("image/") ||
@@ -69,6 +82,16 @@ export function createNotesImagePasteDropExtension(
                 ev.preventDefault();
                 dt.dropEffect = "copy";
                 return false;
+              },
+              drop(_view, e) {
+                const ev = e as DragEvent;
+                const dt = ev.dataTransfer;
+                if (!dt?.files?.length) return false;
+                const imageFiles = Array.from(dt.files).filter(isLikelyImageFile);
+                if (!imageFiles.length) return false;
+                ev.preventDefault();
+                void getCtx().uploadFiles(imageFiles);
+                return true;
               },
             },
             handlePaste(_view, event) {

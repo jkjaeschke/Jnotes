@@ -17,7 +17,7 @@ import {
 } from "./auth/middleware.js";
 import * as store from "./data/store.js";
 import { htmlToPlainText } from "./lib/htmlToPlain.js";
-import { createReadStreamSync, signedDownloadUrl } from "./lib/storage.js";
+import { createReadStreamSync } from "./lib/storage.js";
 import { processImportJob } from "./services/importEnex.js";
 
 mkdirSync(join(config.localDataDir, "blobs"), { recursive: true });
@@ -409,12 +409,11 @@ app.get("/api/attachments/:id/file", async (request, reply) => {
   const id = (request.params as { id: string }).id;
   const att = await store.getAttachment(request.user!.id, id);
   if (!att) return reply.status(404).send({ error: "Not found" });
-  if (config.gcsBucket) {
-    const url = await signedDownloadUrl(att.gcsPath, att.filename);
-    return reply.redirect(url);
-  }
+  // Stream from storage directly (works for both local + GCS) and avoids
+  // signed URL requirements (iam.serviceAccounts.signBlob) in Cloud Run.
   const stream = createReadStreamSync(att.gcsPath);
   reply.header("Content-Type", att.mimeType);
+  // Keep images inline; other files will download in most browsers anyway.
   return reply.send(stream);
 });
 
