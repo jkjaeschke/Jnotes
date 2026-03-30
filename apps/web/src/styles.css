@@ -617,9 +617,23 @@ button {
 }
 
 .notes-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.35rem;
   padding: 0.15rem 0.25rem 0.35rem;
   border-bottom: 1px solid var(--border);
   margin-bottom: 0.35rem;
+}
+
+.notes-panel-header-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.notes-panel-header-menu {
+  flex-shrink: 0;
+  margin-top: -0.1rem;
 }
 
 .notes-panel-header strong {
@@ -687,6 +701,11 @@ button {
   flex-wrap: wrap;
   gap: 0.5rem;
   align-items: center;
+}
+
+.notes-panel-toolbar {
+  flex-wrap: nowrap;
+  gap: 0.5rem;
 }
 
 .btn {

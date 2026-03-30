@@ -15,7 +15,7 @@ import { Underline } from "@tiptap/extension-underline";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useWorkspaceOutlet } from "../workspaceOutletContext.js";
 import { NoteEditorToolbar } from "../components/NoteEditorToolbar.js";
 import { apiGet, apiSend, apiUpload } from "../api.js";
@@ -85,6 +85,7 @@ type Props = {
 
 export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged }: Props) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const { isMobile } = useWorkspaceOutlet();
   const [libraryCollapsed, setLibraryCollapsed] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -111,6 +112,8 @@ export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged 
   const [noteMenuOpenId, setNoteMenuOpenId] = useState<string | null>(null);
   /** Editor toolbar ⋯ menu. */
   const [editorNoteMenuOpen, setEditorNoteMenuOpen] = useState(false);
+  /** Notes panel: ⋯ menu for notebook (e.g. delete). */
+  const [notebookPanelMenuOpen, setNotebookPanelMenuOpen] = useState(false);
   /** Move note modal: note being moved. */
   const [moveNote, setMoveNote] = useState<Note | null>(null);
   const [moveTargetNotebookId, setMoveTargetNotebookId] = useState<string>("");
@@ -337,10 +340,11 @@ export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged 
   const closeNoteMenus = useCallback(() => {
     setNoteMenuOpenId(null);
     setEditorNoteMenuOpen(false);
+    setNotebookPanelMenuOpen(false);
   }, []);
 
   useEffect(() => {
-    if (noteMenuOpenId === null && !editorNoteMenuOpen) return;
+    if (noteMenuOpenId === null && !editorNoteMenuOpen && !notebookPanelMenuOpen) return;
     const onDocMouseDown = (e: MouseEvent) => {
       const t = e.target as HTMLElement | null;
       if (t?.closest(".note-menu-anchor")) return;
@@ -348,7 +352,7 @@ export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged 
     };
     document.addEventListener("mousedown", onDocMouseDown);
     return () => document.removeEventListener("mousedown", onDocMouseDown);
-  }, [noteMenuOpenId, editorNoteMenuOpen, closeNoteMenus]);
+  }, [noteMenuOpenId, editorNoteMenuOpen, notebookPanelMenuOpen, closeNoteMenus]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -798,23 +802,60 @@ export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged 
           <>
             <div className="stack-section-title">Notes</div>
             <div className="notes-panel-header">
-              <strong title={activeNotebookName}>{activeNotebookName}</strong>
-              {activeStackName && <div className="notes-panel-meta">In stack: {activeStackName}</div>}
-              <div className="notes-panel-meta">
-                {notesSorted.length === 1 ? "1 note" : `${notesSorted.length} notes`}
+              <div className="notes-panel-header-main">
+                <strong title={activeNotebookName}>{activeNotebookName}</strong>
+                {activeStackName && <div className="notes-panel-meta">In stack: {activeStackName}</div>}
+                <div className="notes-panel-meta">
+                  {notesSorted.length === 1 ? "1 note" : `${notesSorted.length} notes`}
+                </div>
               </div>
+              <div className="note-menu-anchor notes-panel-header-menu">
+                <button
+                  type="button"
+                  className="note-menu-trigger"
+                  aria-label="Notebook options"
+                  aria-haspopup="menu"
+                  aria-expanded={notebookPanelMenuOpen}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setEditorNoteMenuOpen(false);
+                    setNoteMenuOpenId(null);
+                    setNotebookPanelMenuOpen((v) => !v);
+                  }}
+                >
+                  ⋯
+                </button>
+                {notebookPanelMenuOpen && (
+                  <ul className="note-actions-menu" role="menu">
+                    <li role="none">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="note-actions-menu-item danger"
+                        onClick={() => {
+                          setNotebookPanelMenuOpen(false);
+                          void deleteNotebook(activeNotebook);
+                        }}
+                      >
+                        Delete notebook…
+                      </button>
+                    </li>
+                  </ul>
+                )}
+              </div>
+            </div>
+            <div className="toolbar notes-panel-toolbar">
+              <button type="button" className="btn btn-primary" onClick={() => void newNote()}>
+                +Note
+              </button>
               <button
                 type="button"
-                className="btn btn-ghost btn-tiny danger"
-                style={{ marginTop: "0.4rem" }}
-                onClick={() => void deleteNotebook(activeNotebook)}
+                className="btn btn-ghost"
+                onClick={() => navigate("/search")}
+                aria-label="Search notes"
               >
-                Delete notebook…
-              </button>
-            </div>
-            <div className="toolbar">
-              <button type="button" className="btn btn-primary" onClick={() => void newNote()}>
-                New note in this notebook
+                Search
               </button>
             </div>
             {notesSorted.length === 0 ? (
@@ -844,6 +885,7 @@ export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged 
                         onClick={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
+                          setNotebookPanelMenuOpen(false);
                           setEditorNoteMenuOpen(false);
                           setNoteMenuOpenId((prev) => (prev === n.id ? null : n.id));
                         }}
@@ -929,6 +971,7 @@ export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged 
                   aria-expanded={editorNoteMenuOpen}
                   onClick={(e) => {
                     e.preventDefault();
+                    setNotebookPanelMenuOpen(false);
                     setNoteMenuOpenId(null);
                     setEditorNoteMenuOpen((v) => !v);
                   }}
@@ -1009,8 +1052,7 @@ export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged 
               <>
                 <span className="empty-hint-title">No Note Selected</span>
                 <p className="empty-hint-sub">
-                  Open a note from <strong>{activeNotebookName}</strong>, or use{" "}
-                  <strong>New note in this notebook</strong>.
+                  Open a note from <strong>{activeNotebookName}</strong>, or use <strong>+Note</strong>.
                 </p>
               </>
             )}
