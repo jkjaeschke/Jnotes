@@ -8,7 +8,7 @@ import fastifyStatic from "@fastify/static";
 import cookie from "@fastify/cookie";
 import Fastify from "fastify";
 import { z } from "zod";
-import { config, isEmailAllowed } from "./config.js";
+import { config, corsAllowedOrigins, isEmailAllowed } from "./config.js";
 import { verifyGoogleIdToken } from "./auth/google.js";
 import {
   clearSessionCookie,
@@ -39,7 +39,11 @@ const app = Fastify({ logger: true });
 
 await app.register(cookie);
 await app.register(cors, {
-  origin: config.frontendOrigin,
+  origin: (origin, cb) => {
+    const allowed = corsAllowedOrigins();
+    if (!origin) return cb(null, true);
+    cb(null, allowed.includes(origin));
+  },
   credentials: true,
 });
 await app.register(multipart, {

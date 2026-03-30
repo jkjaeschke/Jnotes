@@ -4,6 +4,9 @@ substitutions:
   _AR_REPO: freenotes
   # GCS bucket for attachments (create with infra/gcp/setup.sh or gsutil mb).
   _GCS_BUCKET: freenotes-491520-freenotes-data
+  # SPA origin(s) for CORS + cookies — must match where the web app is hosted (not the API URL).
+  # Example: https://my-app.web.app  (omit or leave empty to avoid overwriting Cloud Run env).
+  _FRONTEND_ORIGIN: ""
 
 timeout: 1800s
 
@@ -57,9 +60,10 @@ steps:
           --service-account "freenotes-api@${PROJECT_ID}.iam.gserviceaccount.com" \
           --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GCS_BUCKET=${_GCS_BUCKET},NODE_ENV=production" \
           --set-secrets "SESSION_SECRET=SESSION_SECRET:latest,GOOGLE_CLIENT_ID=GOOGLE_CLIENT_ID:latest"
-        URL=$$(gcloud run services describe "${_SERVICE}" --region="${_REGION}" --format='value(status.url)')
-        gcloud run services update "${_SERVICE}" --region="${_REGION}" \
-          --update-env-vars FRONTEND_ORIGIN=$$URL
+        if [[ -n "${_FRONTEND_ORIGIN}" ]]; then
+          gcloud run services update "${_SERVICE}" --region="${_REGION}" \
+            --update-env-vars "FRONTEND_ORIGIN=${_FRONTEND_ORIGIN}"
+        fi
 
 images:
   - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:${SHORT_SHA}"

@@ -63,15 +63,22 @@ export async function setSessionCookie(
 ): Promise<void> {
   const token = await signSessionToken(userId);
   const isProd = config.nodeEnv === "production";
+  // Cross-origin SPA (e.g. Vercel → Cloud Run) requires SameSite=None; Lax cookies are not
+  // sent on credentialed fetches to another site, so /api/* calls fail after refresh.
   reply.setCookie(COOKIE, token, {
     path: "/",
     httpOnly: true,
-    sameSite: "lax",
+    sameSite: isProd ? "none" : "lax",
     secure: isProd,
     maxAge: 7 * 24 * 60 * 60,
   });
 }
 
 export function clearSessionCookie(reply: FastifyReply): void {
-  reply.clearCookie(COOKIE, { path: "/" });
+  const isProd = config.nodeEnv === "production";
+  reply.clearCookie(COOKIE, {
+    path: "/",
+    sameSite: isProd ? "none" : "lax",
+    secure: isProd,
+  });
 }

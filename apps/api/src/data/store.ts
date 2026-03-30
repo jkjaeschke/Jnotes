@@ -223,24 +223,29 @@ export async function listNotebooks(userId: string) {
   let lastDoc: QueryDocumentSnapshot | undefined;
   const pageSize = 400;
 
-  for (;;) {
-    let q = db
-      .collection("notes")
-      .where("userId", "==", userId)
-      .orderBy("updatedAt", "desc")
-      .limit(pageSize);
-    if (lastDoc) q = q.startAfter(lastDoc);
-    const nq = await q.get();
-    if (nq.empty) break;
-    for (const doc of nq.docs) {
-      const nbId = doc.data().notebookId as string;
-      if (!notebookIds.has(nbId)) continue;
-      if (lastNoteActivityMs.has(nbId)) continue;
-      lastNoteActivityMs.set(nbId, noteDocMaxRecencyMs(doc));
+  try {
+    for (;;) {
+      let q = db
+        .collection("notes")
+        .where("userId", "==", userId)
+        .orderBy("updatedAt", "desc")
+        .limit(pageSize);
+      if (lastDoc) q = q.startAfter(lastDoc);
+      const nq = await q.get();
+      if (nq.empty) break;
+      for (const doc of nq.docs) {
+        const nbId = doc.data().notebookId as string;
+        if (!notebookIds.has(nbId)) continue;
+        if (lastNoteActivityMs.has(nbId)) continue;
+        lastNoteActivityMs.set(nbId, noteDocMaxRecencyMs(doc));
+      }
+      if (lastNoteActivityMs.size >= notebookIds.size) break;
+      if (nq.size < pageSize) break;
+      lastDoc = nq.docs[nq.docs.length - 1]!;
     }
-    if (lastNoteActivityMs.size >= notebookIds.size) break;
-    if (nq.size < pageSize) break;
-    lastDoc = nq.docs[nq.docs.length - 1]!;
+  } catch (e) {
+    // Missing Firestore index or transient error — still return notebooks (manual sort).
+    console.error("listNotebooks: activity scan failed", e);
   }
 
   function notebookActivityMs(nb: (typeof list)[0]): number {
