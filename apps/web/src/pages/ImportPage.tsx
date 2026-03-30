@@ -27,6 +27,8 @@ type PresignResponse =
       fileName: string;
       uploadUrl: string;
       contentType: string;
+      /** GCS resumable session URL — PUT must include Content-Range. */
+      uploadMethod?: "resumable";
     };
 
 export function ImportPage({ googleToken, onDone }: Props) {
@@ -93,10 +95,21 @@ export function ImportPage({ googleToken, onDone }: Props) {
           jobId = r.job.id;
         } else {
           setStatus("Uploading to storage…");
+          const putHeaders: Record<string, string> = {
+            "Content-Type": presign.contentType,
+          };
+          // Resumable upload session (GCS) requires Content-Range for the final object size.
+          if (presign.uploadMethod === "resumable" || presign.uploadMethod === undefined) {
+            if (f.size > 0) {
+              putHeaders["Content-Range"] = `bytes 0-${f.size - 1}/${f.size}`;
+            } else {
+              putHeaders["Content-Range"] = "bytes */0";
+            }
+          }
           const putRes = await fetch(presign.uploadUrl, {
             method: "PUT",
             body: f,
-            headers: { "Content-Type": presign.contentType },
+            headers: putHeaders,
           });
           if (!putRes.ok) {
             const hint =

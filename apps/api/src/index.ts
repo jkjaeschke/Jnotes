@@ -20,7 +20,7 @@ import { htmlToPlainText } from "./lib/htmlToPlain.js";
 import {
   createReadStreamSync,
   gcsObjectExists,
-  signedUploadUrl,
+  resumableImportUploadUrl,
   usesGcs,
 } from "./lib/storage.js";
 import { processImportJob } from "./services/importEnex.js";
@@ -372,14 +372,30 @@ app.post("/api/imports/presign", authPre, async (request, reply) => {
   }
   const jobId = randomUUID();
   const key = `imports/${request.user!.id}/${jobId}/${fn}`;
-  const uploadUrl = await signedUploadUrl(key, ENEX_CONTENT_TYPE, 60 * 60 * 1000);
-  return {
-    mode: "direct" as const,
-    jobId,
-    fileName: fn,
-    uploadUrl,
-    contentType: ENEX_CONTENT_TYPE,
-  };
+  const origin =
+    typeof request.headers.origin === "string" && request.headers.origin.length > 0
+      ? request.headers.origin
+      : corsAllowedOrigins()[0];
+  try {
+    const uploadUrl = await resumableImportUploadUrl(key, ENEX_CONTENT_TYPE, {
+      origin,
+    });
+    return {
+      mode: "direct" as const,
+      jobId,
+      fileName: fn,
+      uploadUrl,
+      contentType: ENEX_CONTENT_TYPE,
+      /** Browser must send Content-Range for this resumable session PUT (see ImportPage). */
+      uploadMethod: "resumable" as const,
+    };
+  } catch (e) {
+    request.log.error(e, "imports/presign failed");
+    return reply.status(500).send({
+      error:
+        e instanceof Error ? e.message : "Could not start upload session. Check API logs.",
+    });
+  }
 });
 
 app.post("/api/imports/commit", authPre, async (request, reply) => {

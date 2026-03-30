@@ -71,26 +71,26 @@ export function createReadStreamSync(key: string): NodeJS.ReadableStream {
   return fsCreateReadStream(localPath(key));
 }
 
-/** Browser PUT to this URL uploads bytes directly to GCS (bypasses Cloud Run’s 32 MiB limit). */
-export async function signedUploadUrl(
+/**
+ * Returns a resumable upload session URL for the browser to PUT the file body to.
+ * Uses OAuth on the server (no private-key signing), so it works on Cloud Run where
+ * v4 signed URLs often fail without iam.serviceAccounts.signBlob / TokenCreator.
+ */
+export async function resumableImportUploadUrl(
   key: string,
   contentType: string,
-  expiresMs: number
+  options?: { origin?: string }
 ): Promise<string> {
   const gcsClient = getGcs();
   if (!gcsClient) {
-    throw new Error("signedUploadUrl requires GCS_BUCKET");
+    throw new Error("resumableImportUploadUrl requires GCS_BUCKET");
   }
-  const [url] = await gcsClient
-    .bucket(config.gcsBucket)
-    .file(key)
-    .getSignedUrl({
-      version: "v4",
-      action: "write",
-      expires: Date.now() + expiresMs,
-      contentType,
-    });
-  return url;
+  const file = gcsClient.bucket(config.gcsBucket).file(key);
+  const [uri] = await file.createResumableUpload({
+    metadata: { contentType },
+    ...(options?.origin ? { origin: options.origin } : {}),
+  });
+  return uri;
 }
 
 export async function gcsObjectExists(key: string): Promise<boolean> {
