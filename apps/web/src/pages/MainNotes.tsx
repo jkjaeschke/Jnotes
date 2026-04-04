@@ -1267,7 +1267,7 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
                     !activeNote
                       ? undefined
                       : !aiTierActive
-                        ? "AI tier not enabled — set users.plan to \"ai\" in Firestore, or DEV_GRANT_AI=1 / AI_TIER_BYPASS_EMAILS on the API"
+                        ? "AI tier not enabled for this account — check API: OPENAI key + billing off, or users.plan=ai / DEV_GRANT_AI=1"
                         : "AI tools"
                   }
                   aria-expanded={aiToolbarOpen}
