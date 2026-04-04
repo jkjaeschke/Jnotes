@@ -5,6 +5,7 @@
  *   notes/{id}         — notebookId, title, body, bodyText, optional evernoteGuid
  *   attachments/{id}   — noteId, blob metadata
  *   importJobs/{id}    — ENEX import staging
+ *   feedback/{id}      — user-submitted product feedback (userId, email, message)
  */
 import { createHash } from "node:crypto";
 import type {
@@ -13,6 +14,8 @@ import type {
 } from "@google-cloud/firestore";
 import { FieldPath, FieldValue, Timestamp } from "@google-cloud/firestore";
 import { db } from "../firestore/client.js";
+import type { StoredPlan } from "../lib/aiAccess.js";
+import { normalizeStoredPlan } from "../lib/aiAccess.js";
 
 export function userIdFromEmail(email: string): string {
   const norm = email.toLowerCase().trim();
@@ -57,11 +60,196 @@ export async function upsertUserByEmail(
 
 export async function getUserById(
   id: string
-): Promise<{ id: string; email: string } | null> {
+): Promise<{ id: string; email: string; plan: StoredPlan } | null> {
   const snap = await db.collection("users").doc(id).get();
   if (!snap.exists) return null;
   const d = snap.data()!;
-  return { id: snap.id, email: d.email as string };
+  return {
+    id: snap.id,
+    email: d.email as string,
+    plan: normalizeStoredPlan(d.plan),
+  };
+}
+
+export async function setUserPlan(userId: string, plan: StoredPlan) {
+  await db
+    .collection("users")
+    .doc(userId)
+    .set(
+      {
+        plan,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+}
+
+/**
+ * Atomically increment monthly rewrite usage; returns false if over cap.
+ */
+export async function consumeAiRewriteQuota(
+  userId: string,
+  maxPerMonth: number
+): Promise<boolean> {
+  const ref = db.collection("users").doc(userId);
+  const monthKey = new Date().toISOString().slice(0, 7);
+  try {
+    return await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return false;
+      const d = snap.data()!;
+      const prevMonth = (d.aiRewriteMonth as string | undefined) ?? "";
+      let count = (d.aiRewriteCount as number | undefined) ?? 0;
+      if (prevMonth !== monthKey) count = 0;
+      if (count >= maxPerMonth) return false;
+      tx.update(ref, {
+        aiRewriteMonth: monthKey,
+        aiRewriteCount: count + 1,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return true;
+    });
+  } catch {
+    return false;
+  }
+}
+
+/** Decrements rewrite count after a failed provider call (pair with `consumeAiRewriteQuota`). */
+export async function refundAiRewriteQuota(userId: string): Promise<void> {
+  const ref = db.collection("users").doc(userId);
+  try {
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return;
+      const d = snap.data()!;
+      const month = (d.aiRewriteMonth as string | undefined) ?? "";
+      let c = (d.aiRewriteCount as number | undefined) ?? 0;
+      if (c <= 0) return;
+      tx.update(ref, {
+        aiRewriteCount: c - 1,
+        aiRewriteMonth: month,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    });
+  } catch {
+    // ignore
+  }
+}
+
+export type NoteAiSummary = {
+  id: string;
+  notebookId: string;
+  title: string;
+  bodyText: string;
+};
+
+/** Lightweight rows for similarity / organize (caps Firestore reads). */
+export async function listNoteSummariesForAi(
+  userId: string,
+  opts: { notebookId?: string; limit?: number }
+): Promise<NoteAiSummary[]> {
+  const cap = Math.min(Math.max(opts.limit ?? 400, 1), 500);
+  let q = db.collection("notes").where("userId", "==", userId);
+  if (opts.notebookId) {
+    q = q.where("notebookId", "==", opts.notebookId);
+  }
+  const snap = await q.limit(cap).get();
+  return snap.docs.map((doc) => {
+    const d = doc.data();
+    return {
+      id: doc.id,
+      notebookId: d.notebookId as string,
+      title: (d.title as string) ?? "",
+      bodyText: (d.bodyText as string) ?? "",
+    };
+  });
+}
+
+type AttachmentRow = { docId: string; gcsPath: string };
+
+/**
+ * Update the primary note with merged HTML, delete secondary notes and their attachment rows,
+ * then remove blobs (after the transaction commits).
+ */
+export async function commitNoteMerge(
+  userId: string,
+  primaryNoteId: string,
+  otherNoteIds: string[],
+  mergedBody: string,
+  mergedBodyText: string,
+  deleteBlob: (key: string) => void
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const others = [...new Set(otherNoteIds)].filter((id) => id && id !== primaryNoteId);
+  if (others.length === 0) {
+    return { ok: false, error: "At least one other note is required" };
+  }
+
+  const primaryRef = db.collection("notes").doc(primaryNoteId);
+  const primarySnap = await primaryRef.get();
+  if (!primarySnap.exists || primarySnap.data()!.userId !== userId) {
+    return { ok: false, error: "Primary note not found" };
+  }
+
+  const secondaryRefs = others.map((id) => db.collection("notes").doc(id));
+  for (const ref of secondaryRefs) {
+    const s = await ref.get();
+    if (!s.exists || s.data()!.userId !== userId) {
+      return { ok: false, error: "One or more notes to merge were not found" };
+    }
+  }
+
+  const attachmentsByNote = new Map<string, AttachmentRow[]>();
+  for (const noteId of others) {
+    const asnap = await db
+      .collection("attachments")
+      .where("noteId", "==", noteId)
+      .get();
+    const rows: AttachmentRow[] = [];
+    for (const doc of asnap.docs) {
+      if (doc.data().userId !== userId) continue;
+      rows.push({
+        docId: doc.id,
+        gcsPath: doc.data().gcsPath as string,
+      });
+    }
+    attachmentsByNote.set(noteId, rows);
+  }
+
+  try {
+    await db.runTransaction(async (tx) => {
+      const pR = await tx.get(primaryRef);
+      if (!pR.exists || pR.data()!.userId !== userId) {
+        throw new Error("primary");
+      }
+      for (const ref of secondaryRefs) {
+        const s = await tx.get(ref);
+        if (!s.exists || s.data()!.userId !== userId) throw new Error("secondary");
+      }
+      tx.update(primaryRef, {
+        body: mergedBody,
+        bodyText: mergedBodyText,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      for (const ref of secondaryRefs) {
+        tx.delete(ref);
+      }
+      for (const noteId of others) {
+        for (const a of attachmentsByNote.get(noteId) ?? []) {
+          tx.delete(db.collection("attachments").doc(a.docId));
+        }
+      }
+    });
+  } catch {
+    return { ok: false, error: "Merge failed; no changes were saved" };
+  }
+
+  for (const noteId of others) {
+    for (const a of attachmentsByNote.get(noteId) ?? []) {
+      deleteBlob(a.gcsPath);
+    }
+  }
+
+  return { ok: true };
 }
 
 function notebookFromDoc(doc: DocumentSnapshot | QueryDocumentSnapshot) {
@@ -671,6 +859,21 @@ export async function listImportJobs(userId: string, limit: number) {
   const list = snap.docs.map((d) => importJobPublicFromSnap(d));
   list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   return list.slice(0, limit);
+}
+
+export async function createFeedbackEntry(data: {
+  userId: string;
+  email: string;
+  message: string;
+}) {
+  const ref = db.collection("feedback").doc();
+  await ref.set({
+    userId: data.userId,
+    email: data.email,
+    message: data.message,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  return { id: ref.id };
 }
 
 function escapeHtml(s: string): string {

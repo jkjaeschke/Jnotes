@@ -275,6 +275,15 @@ button {
   font-weight: 600;
 }
 
+button.sidebar-nav-link {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  width: 100%;
+  text-align: left;
+}
+
 .sidebar-nav-label {
   flex: 1;
   min-width: 0;
@@ -650,7 +659,8 @@ button {
 }
 
 .editor-panel {
-  overflow: auto;
+  /* Allow absolutely positioned AI / note menus to paint below the toolbar row. */
+  overflow: visible;
   padding: 1.25rem 1.25rem 1.5rem;
   display: flex;
   flex-direction: column;
@@ -658,6 +668,28 @@ button {
   background: var(--bg);
   min-height: 0;
   flex: 1;
+}
+
+/* Keep chrome from shrinking; body fills remaining column height. */
+.editor-panel [role="alert"],
+.editor-panel > .editor-breadcrumb,
+.editor-panel > .toolbar.editor-toolbar,
+.editor-panel > .title-input {
+  flex-shrink: 0;
+}
+
+.editor-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-body-tiptap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .editor-breadcrumb {
@@ -795,7 +827,7 @@ button {
   right: 0;
   top: 100%;
   margin-top: 2px;
-  z-index: 20;
+  z-index: 50;
   min-width: 11.5rem;
   padding: 0.25rem 0;
   list-style: none;
@@ -997,7 +1029,7 @@ button {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 50;
+  z-index: 160;
   background: rgba(0, 0, 0, 0.35);
   display: flex;
   align-items: center;
@@ -1013,6 +1045,19 @@ button {
   background: var(--surface);
   border: 1px solid var(--border);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+}
+
+.modal.modal-wide {
+  max-width: min(28rem, 100vw - 2rem);
+}
+
+.feedback-modal-textarea {
+  display: block;
+  width: 100%;
+  resize: vertical;
+  min-height: 8rem;
+  line-height: 1.45;
+  margin-top: 0.25rem;
 }
 
 .modal-actions {
@@ -1077,8 +1122,11 @@ ul.notes-list {
   flex-shrink: 0;
 }
 
-.ProseMirror {
-  min-height: 280px;
+/* Fills the editor column; scrolls inside the frame when content is long. */
+.editor-body-tiptap .ProseMirror {
+  flex: 1 1 0;
+  min-height: 8rem;
+  overflow-y: auto;
   outline: none;
   padding: 0.75rem;
   border: 1px solid var(--border);

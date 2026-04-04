@@ -6,6 +6,7 @@
 #   export PROJECT_ID=freenotes-491520
 #   export REGION=us-central1
 #   export VITE_GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com   # same as GOOGLE_CLIENT_ID secret
+#   export OPENAI_API_KEY_SECRET=your-secret-id   # optional: Secret Manager id for AI rewrite
 #   ./infra/gcp/deploy-cloud-run.sh
 #
 # Or after Cloud Build pushed :latest:
@@ -39,13 +40,18 @@ fi
 
 gcloud config set project "${PROJECT_ID}"
 
+ENV_VARS="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GCS_BUCKET=${GCS_BUCKET},NODE_ENV=production"
+if [[ -n "${OPENAI_API_KEY_SECRET:-}" ]]; then
+  ENV_VARS="${ENV_VARS},OPENAI_API_KEY_SECRET=${OPENAI_API_KEY_SECRET}"
+fi
+
 gcloud run deploy "${SERVICE}" \
   --image "${IMAGE}" \
   --region "${REGION}" \
   --platform managed \
   --allow-unauthenticated \
   --service-account "${RUN_SA}" \
-  --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GCS_BUCKET=${GCS_BUCKET},NODE_ENV=production" \
+  --set-env-vars "${ENV_VARS}" \
   --set-secrets "SESSION_SECRET=SESSION_SECRET:latest,GOOGLE_CLIENT_ID=GOOGLE_CLIENT_ID:latest"
 
 URL="$(gcloud run services describe "${SERVICE}" --region="${REGION}" --format='value(status.url)')"

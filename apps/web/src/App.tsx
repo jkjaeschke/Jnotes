@@ -7,7 +7,12 @@ import { MainNotes } from "./pages/MainNotes.js";
 import { SearchPage } from "./pages/SearchPage.js";
 import { ImportPage } from "./pages/ImportPage.js";
 
-export type User = { id: string; email: string };
+export type User = {
+  id: string;
+  email: string;
+  plan: "free" | "ai";
+  aiTierActive: boolean;
+};
 
 export default function App() {
   const [user, setUser] = useState<User | null | undefined>(undefined);
@@ -71,7 +76,7 @@ export default function App() {
             index
             element={
               <MainNotes
-                userId={user.id}
+                user={user}
                 googleToken={googleToken}
                 refreshKey={nbKey}
                 onNotebooksChanged={() => setNbKey((k) => k + 1)}

@@ -15,6 +15,9 @@ import {
   requireAuth,
   setSessionCookie,
 } from "./auth/middleware.js";
+import { userHasAiTier } from "./lib/aiAccess.js";
+import { registerAiRoutes } from "./routes/ai.js";
+import { registerBillingRoutes } from "./routes/billing.js";
 import * as store from "./data/store.js";
 import { htmlToPlainText } from "./lib/htmlToPlain.js";
 import {
@@ -24,8 +27,11 @@ import {
   usesGcs,
 } from "./lib/storage.js";
 import { processImportJob } from "./services/importEnex.js";
+import { hydrateSecretsFromGCP } from "./lib/secretManager.js";
 
 mkdirSync(join(config.localDataDir, "blobs"), { recursive: true });
+
+await hydrateSecretsFromGCP();
 
 const ENEX_CONTENT_TYPE = "application/xml";
 
@@ -68,7 +74,16 @@ app.post("/api/auth/google", async (request, reply) => {
   }
   const user = await store.upsertUserByEmail(payload.email);
   await setSessionCookie(reply, user.id);
-  return { user: { id: user.id, email: user.email } };
+  const profile = await store.getUserById(user.id);
+  const plan = profile?.plan ?? "free";
+  return {
+    user: {
+      id: user.id,
+      email: user.email,
+      plan,
+      aiTierActive: userHasAiTier(user.email, plan),
+    },
+  };
 });
 
 app.post("/api/auth/logout", async (_request, reply) => {
@@ -79,7 +94,31 @@ app.post("/api/auth/logout", async (_request, reply) => {
 const authPre = { preHandler: requireAuth };
 
 app.get("/api/me", authPre, async (request) => {
-  return { user: request.user };
+  const u = request.user!;
+  return {
+    user: {
+      id: u.id,
+      email: u.email,
+      plan: u.plan,
+      aiTierActive: userHasAiTier(u.email, u.plan),
+    },
+  };
+});
+
+app.post("/api/feedback", authPre, async (request, reply) => {
+  const schema = z.object({
+    message: z.string().trim().min(1).max(8000),
+  });
+  const parsed = schema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.status(400).send({ error: "Message must be 1–8000 characters." });
+  }
+  await store.createFeedbackEntry({
+    userId: request.user!.id,
+    email: request.user!.email,
+    message: parsed.data.message,
+  });
+  return { ok: true };
 });
 
 app.get("/api/stacks", authPre, async (request) => {
@@ -525,6 +564,11 @@ app.get("/api/imports/:id", authPre, async (request, reply) => {
   const { userId: _u, gcsStagingKey: _g, ...rest } = job;
   return { job: rest };
 });
+
+registerAiRoutes(app);
+if (config.enableStripeCheckout) {
+  await registerBillingRoutes(app);
+}
 
 app.get("/api/attachments/:id/file", async (request, reply) => {
   await requireAuth(request, reply);

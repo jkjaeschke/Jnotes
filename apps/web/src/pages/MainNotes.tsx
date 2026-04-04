@@ -30,6 +30,7 @@ import {
   isLikelyImageFile,
 } from "../notesImagePasteDropExtension.js";
 import { FontSize } from "../tiptapFontSize.js";
+import type { User } from "../App.js";
 
 const LIB_COLLAPSED_KEY = "freenotes-library-collapsed";
 const NOTES_COLLAPSED_KEY = "freenotes-notes-collapsed";
@@ -99,14 +100,29 @@ function sortNotebooksForLibrary(a: Notebook, b: Notebook): number {
 }
 
 type Props = {
-  /** Logged-in user; used to scope last notebook/note in localStorage. */
-  userId: string;
+  user: User;
   googleToken: string | null;
   refreshKey: number;
   onNotebooksChanged: () => void;
 };
 
-export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged }: Props) {
+type SimilarCandidate = {
+  id: string;
+  score: number;
+  reason: string;
+  title: string;
+};
+
+type OrganizeSuggestion = {
+  noteId: string;
+  suggestedNotebookId: string;
+  reason: string;
+  confidence: number;
+};
+
+export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }: Props) {
+  const userId = user.id;
+  const aiTierActive = user.aiTierActive;
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const { isMobile } = useWorkspaceOutlet();
@@ -140,6 +156,27 @@ export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged 
   /** Move note modal: note being moved. */
   const [moveNote, setMoveNote] = useState<Note | null>(null);
   const [moveTargetNotebookId, setMoveTargetNotebookId] = useState<string>("");
+  const [aiToolbarOpen, setAiToolbarOpen] = useState(false);
+  const [aiTidy, setAiTidy] = useState<{ preview: string } | null>(null);
+  const [aiSimilar, setAiSimilar] = useState<{
+    noteId: string;
+    sourceTitle: string;
+    scope: "notebook" | "all";
+    candidates: SimilarCandidate[];
+  } | null>(null);
+  const [similarSelected, setSimilarSelected] = useState<Record<string, boolean>>({});
+  const [mergePrimaryId, setMergePrimaryId] = useState<string>("");
+  const [aiMerge, setAiMerge] = useState<{
+    primaryId: string;
+    otherIds: string[];
+    mergedHtml: string;
+    warnings: string[];
+  } | null>(null);
+  const [aiOrganize, setAiOrganize] = useState<{
+    suggestions: OrganizeSuggestion[];
+    accepted: Record<string, boolean>;
+  } | null>(null);
+  const [aiRewrite, setAiRewrite] = useState<{ preset: string; preview: string } | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editorRef = useRef<Editor | null>(null);
   const googleTokenRef = useRef(googleToken);
@@ -364,10 +401,18 @@ export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged 
     setNoteMenuOpenId(null);
     setEditorNoteMenuOpen(false);
     setNotebookPanelMenuOpen(false);
+    setAiToolbarOpen(false);
   }, []);
 
   useEffect(() => {
-    if (noteMenuOpenId === null && !editorNoteMenuOpen && !notebookPanelMenuOpen) return;
+    if (
+      noteMenuOpenId === null &&
+      !editorNoteMenuOpen &&
+      !notebookPanelMenuOpen &&
+      !aiToolbarOpen
+    ) {
+      return;
+    }
     const onDocMouseDown = (e: MouseEvent) => {
       const t = e.target as HTMLElement | null;
       if (t?.closest(".note-menu-anchor")) return;
@@ -375,20 +420,13 @@ export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged 
     };
     document.addEventListener("mousedown", onDocMouseDown);
     return () => document.removeEventListener("mousedown", onDocMouseDown);
-  }, [noteMenuOpenId, editorNoteMenuOpen, notebookPanelMenuOpen, closeNoteMenus]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      if (moveNote) {
-        setMoveNote(null);
-        return;
-      }
-      closeNoteMenus();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [moveNote, closeNoteMenus]);
+  }, [
+    noteMenuOpenId,
+    editorNoteMenuOpen,
+    notebookPanelMenuOpen,
+    aiToolbarOpen,
+    closeNoteMenus,
+  ]);
 
   useEffect(() => {
     const nb = searchParams.get("notebook");
@@ -606,6 +644,205 @@ export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged 
     if (!activeNote) return;
     await deleteNoteById(activeNote);
   }, [activeNote, deleteNoteById]);
+
+  const closeAiModals = useCallback(() => {
+    setAiTidy(null);
+    setAiSimilar(null);
+    setSimilarSelected({});
+    setAiMerge(null);
+    setAiOrganize(null);
+    setAiRewrite(null);
+    setAiToolbarOpen(false);
+  }, []);
+
+  const runTidyPreview = useCallback(async () => {
+    if (!editor || !aiTierActive) return;
+    try {
+      const html = editor.getHTML();
+      const r = await apiSend<{ html: string }>(
+        "/api/ai/tidy-html",
+        "POST",
+        { html },
+        googleToken
+      );
+      setAiToolbarOpen(false);
+      setAiTidy({ preview: r.html });
+    } catch (e) {
+      setErr(String(e));
+    }
+  }, [editor, aiTierActive, googleToken]);
+
+  const openSimilarForNote = useCallback(
+    async (noteId: string, scope: "notebook" | "all", sourceTitle?: string) => {
+      if (!aiTierActive) return;
+      closeNoteMenus();
+      const resolvedTitle =
+        (sourceTitle ?? notesSorted.find((n) => n.id === noteId)?.title ?? "").trim() ||
+        "Untitled";
+      try {
+        const r = await apiSend<{ candidates: SimilarCandidate[] }>(
+          "/api/ai/similar-notes",
+          "POST",
+          { noteId, scope, limit: 20 },
+          googleToken
+        );
+        const sel: Record<string, boolean> = {};
+        for (const c of r.candidates) sel[c.id] = true;
+        setSimilarSelected(sel);
+        setMergePrimaryId(noteId);
+        setAiSimilar({
+          noteId,
+          sourceTitle: resolvedTitle,
+          scope,
+          candidates: r.candidates,
+        });
+      } catch (e) {
+        setErr(String(e));
+      }
+    },
+    [aiTierActive, closeNoteMenus, googleToken, notesSorted]
+  );
+
+  const runMergePreviewFromSimilar = useCallback(async () => {
+    if (!aiSimilar) return;
+    const others = Object.entries(similarSelected)
+      .filter(([, v]) => v)
+      .map(([id]) => id);
+    const primary = mergePrimaryId;
+    const otherNoteIds = others.filter((id) => id !== primary);
+    if (otherNoteIds.length === 0) {
+      setErr("Select at least one other note (not the primary) to merge.");
+      return;
+    }
+    try {
+      const r = await apiSend<{ mergedHtml: string; warnings: string[] }>(
+        "/api/ai/merge-preview",
+        "POST",
+        { primaryNoteId: primary, otherNoteIds },
+        googleToken
+      );
+      setAiMerge({
+        primaryId: primary,
+        otherIds: otherNoteIds,
+        mergedHtml: r.mergedHtml,
+        warnings: r.warnings,
+      });
+    } catch (e) {
+      setErr(String(e));
+    }
+  }, [aiSimilar, similarSelected, mergePrimaryId, googleToken]);
+
+  const commitMerge = useCallback(async () => {
+    if (!aiMerge) return;
+    try {
+      const r = await apiSend<{ note: Note }>(
+        "/api/ai/merge-commit",
+        "POST",
+        {
+          primaryNoteId: aiMerge.primaryId,
+          otherNoteIds: aiMerge.otherIds,
+          mergedHtml: aiMerge.mergedHtml,
+        },
+        googleToken
+      );
+      setAiMerge(null);
+      setAiSimilar(null);
+      setSimilarSelected({});
+      await loadNotes();
+      onNotebooksChanged();
+      setActiveNote(r.note);
+      if (editor) editor.commands.setContent(r.note.body || "<p></p>", false);
+      setTitle(r.note.title);
+    } catch (e) {
+      setErr(String(e));
+    }
+  }, [aiMerge, googleToken, loadNotes, onNotebooksChanged, editor]);
+
+  const runOrganizeSuggestions = useCallback(async () => {
+    if (!activeNb || !aiTierActive) return;
+    const noteIds = notesSorted.map((n) => n.id);
+    if (noteIds.length === 0) return;
+    setNotebookPanelMenuOpen(false);
+    try {
+      const r = await apiSend<{ suggestions: OrganizeSuggestion[] }>(
+        "/api/ai/suggest-notebooks",
+        "POST",
+        { noteIds },
+        googleToken
+      );
+      const acc: Record<string, boolean> = {};
+      for (const s of r.suggestions) acc[s.noteId] = true;
+      setAiOrganize({ suggestions: r.suggestions, accepted: acc });
+    } catch (e) {
+      setErr(String(e));
+    }
+  }, [activeNb, aiTierActive, notesSorted, googleToken]);
+
+  const applyOrganize = useCallback(async () => {
+    if (!aiOrganize) return;
+    const applies = aiOrganize.suggestions
+      .filter((s) => aiOrganize.accepted[s.noteId])
+      .map((s) => ({ noteId: s.noteId, notebookId: s.suggestedNotebookId }));
+    if (applies.length === 0) {
+      setAiOrganize(null);
+      return;
+    }
+    try {
+      await apiSend("/api/ai/apply-suggestions", "POST", { applies }, googleToken);
+      setAiOrganize(null);
+      await loadNotes();
+      onNotebooksChanged();
+      await loadLibrary();
+    } catch (e) {
+      setErr(String(e));
+    }
+  }, [aiOrganize, googleToken, loadNotes, loadLibrary, onNotebooksChanged]);
+
+  const runRewrite = useCallback(
+    async (preset: "concise" | "meeting" | "checklist") => {
+      if (!editor || !aiTierActive) return;
+      try {
+        const html = editor.getHTML();
+        const r = await apiSend<{ html: string }>(
+          "/api/ai/rewrite",
+          "POST",
+          { html, preset },
+          googleToken
+        );
+        setAiToolbarOpen(false);
+        setAiRewrite({ preset, preview: r.html });
+      } catch (e) {
+        setErr(String(e));
+      }
+    },
+    [editor, aiTierActive, googleToken]
+  );
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (aiTidy || aiSimilar || aiMerge || aiOrganize || aiRewrite) {
+        closeAiModals();
+        return;
+      }
+      if (moveNote) {
+        setMoveNote(null);
+        return;
+      }
+      closeNoteMenus();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [
+    moveNote,
+    closeNoteMenus,
+    closeAiModals,
+    aiTidy,
+    aiSimilar,
+    aiMerge,
+    aiOrganize,
+    aiRewrite,
+  ]);
 
   const renderNotebookButton = (nb: Notebook) => (
     <li key={nb.id} className="nb-item">
@@ -851,6 +1088,18 @@ export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged 
                 </button>
                 {notebookPanelMenuOpen && (
                   <ul className="note-actions-menu" role="menu">
+                    {aiTierActive && (
+                      <li role="none">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="note-actions-menu-item"
+                          onClick={() => void runOrganizeSuggestions()}
+                        >
+                          Organize with AI…
+                        </button>
+                      </li>
+                    )}
                     <li role="none">
                       <button
                         type="button"
@@ -937,6 +1186,30 @@ export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged 
                               Move to…
                             </button>
                           </li>
+                          {aiTierActive && (
+                            <>
+                              <li role="none">
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  className="note-actions-menu-item"
+                                  onClick={() => void openSimilarForNote(n.id, "notebook", n.title)}
+                                >
+                                  Similar in this notebook…
+                                </button>
+                              </li>
+                              <li role="none">
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  className="note-actions-menu-item"
+                                  onClick={() => void openSimilarForNote(n.id, "all", n.title)}
+                                >
+                                  Similar in all notebooks…
+                                </button>
+                              </li>
+                            </>
+                          )}
                           <li role="none">
                             <button
                               type="button"
@@ -985,6 +1258,83 @@ export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged 
             </div>
             <div className="toolbar editor-toolbar">
               <NoteEditorToolbar editor={editor} />
+              <div className="note-menu-anchor editor-ai-menu">
+                <button
+                  type="button"
+                  className={`btn btn-ghost${aiToolbarOpen ? " is-active" : ""}`}
+                  disabled={!activeNote}
+                  title={
+                    !activeNote
+                      ? undefined
+                      : !aiTierActive
+                        ? "AI tier not enabled — set users.plan to \"ai\" in Firestore, or DEV_GRANT_AI=1 / AI_TIER_BYPASS_EMAILS on the API"
+                        : "AI tools"
+                  }
+                  aria-expanded={aiToolbarOpen}
+                  aria-haspopup="true"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!activeNote) return;
+                    if (!aiTierActive) {
+                      setErr(
+                        "AI tier is not enabled for your account. In local dev the API enables it automatically when NODE_ENV=development; in production set users.plan to \"ai\" in Firestore or set DEV_GRANT_AI=1 on the server."
+                      );
+                      return;
+                    }
+                    setNotebookPanelMenuOpen(false);
+                    setNoteMenuOpenId(null);
+                    setEditorNoteMenuOpen(false);
+                    setAiToolbarOpen((v) => !v);
+                  }}
+                >
+                  AI ▾
+                </button>
+                {aiToolbarOpen && activeNote && aiTierActive && (
+                  <ul className="note-actions-menu" role="menu">
+                    <li role="none">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="note-actions-menu-item"
+                        onClick={() => void runTidyPreview()}
+                      >
+                        Tidy HTML…
+                      </button>
+                    </li>
+                    <li role="none">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="note-actions-menu-item"
+                        onClick={() => void runRewrite("concise")}
+                      >
+                        Rewrite: Concise…
+                      </button>
+                    </li>
+                    <li role="none">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="note-actions-menu-item"
+                        onClick={() => void runRewrite("meeting")}
+                      >
+                        Rewrite: Meeting notes…
+                      </button>
+                    </li>
+                    <li role="none">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="note-actions-menu-item"
+                        onClick={() => void runRewrite("checklist")}
+                      >
+                        Rewrite: Checklist…
+                      </button>
+                    </li>
+                  </ul>
+                )}
+              </div>
               <div className="note-menu-anchor editor-note-menu">
                 <button
                   type="button"
@@ -1023,6 +1373,38 @@ export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged 
                         Move to…
                       </button>
                     </li>
+                    {aiTierActive && (
+                      <>
+                        <li role="none">
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="note-actions-menu-item"
+                            onClick={() =>
+                              void openSimilarForNote(
+                                activeNote.id,
+                                "notebook",
+                                activeNote.title
+                              )
+                            }
+                          >
+                            Similar in this notebook…
+                          </button>
+                        </li>
+                        <li role="none">
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="note-actions-menu-item"
+                            onClick={() =>
+                              void openSimilarForNote(activeNote.id, "all", activeNote.title)
+                            }
+                          >
+                            Similar in all notebooks…
+                          </button>
+                        </li>
+                      </>
+                    )}
                     <li role="none">
                       <button
                         type="button"
@@ -1051,7 +1433,9 @@ export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged 
                 }, 500);
               }}
             />
-            <EditorContent editor={editor} />
+            <div className="editor-body">
+              <EditorContent editor={editor} className="editor-body-tiptap" />
+            </div>
           </>
         ) : (
           <div
@@ -1119,6 +1503,302 @@ export function MainNotes({ userId, googleToken, refreshKey, onNotebooksChanged 
               </button>
               <button type="button" className="btn btn-primary" onClick={() => void confirmMoveNote()}>
                 Move
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {aiTidy && (
+        <div className="modal-backdrop" role="presentation" onClick={() => setAiTidy(null)}>
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ai-tidy-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 id="ai-tidy-title" style={{ marginTop: 0 }}>
+              Tidy HTML
+            </h3>
+            <p className="muted">Preview the cleaned HTML, then apply it to this note.</p>
+            <div
+              className="ProseMirror ai-modal-preview"
+              style={{ maxHeight: "45vh", overflow: "auto", marginBottom: "1rem" }}
+              dangerouslySetInnerHTML={{ __html: aiTidy.preview }}
+            />
+            <div className="modal-actions">
+              <button type="button" className="btn btn-ghost" onClick={() => setAiTidy(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  if (!editor || !activeNote) return;
+                  editor.commands.setContent(aiTidy.preview, false);
+                  void persist(activeNote.id, titleRef.current, aiTidy.preview);
+                  setAiTidy(null);
+                }}
+              >
+                Apply to note
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {aiSimilar && (
+        <div className="modal-backdrop" role="presentation" onClick={() => setAiSimilar(null)}>
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ai-similar-title"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: 520 }}
+          >
+            <h3 id="ai-similar-title" style={{ marginTop: 0 }}>
+              Similar notes
+            </h3>
+            <p className="muted" style={{ marginBottom: "0.75rem" }}>
+              Source: “{aiSimilar.sourceTitle}” ·{" "}
+              {aiSimilar.scope === "notebook" ? "This notebook only" : "All your notebooks"}
+            </p>
+            {aiSimilar.candidates.length === 0 ? (
+              <p className="muted">No similar notes found.</p>
+            ) : (
+              <>
+                <label className="muted" style={{ display: "block", marginBottom: "0.35rem" }}>
+                  Primary note (kept after merge)
+                </label>
+                <select
+                  className="input"
+                  style={{ marginBottom: "1rem" }}
+                  value={mergePrimaryId}
+                  onChange={(e) => setMergePrimaryId(e.target.value)}
+                  aria-label="Primary note for merge"
+                >
+                  {[aiSimilar.noteId, ...aiSimilar.candidates.map((c) => c.id)]
+                    .filter((id, i, a) => a.indexOf(id) === i)
+                    .map((id) => (
+                      <option key={id} value={id}>
+                        {id === aiSimilar.noteId
+                          ? `${aiSimilar.sourceTitle} (source)`
+                          : `${aiSimilar.candidates.find((c) => c.id === id)?.title ?? id}`}
+                      </option>
+                    ))}
+                </select>
+                <ul className="ai-similar-list" style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                  {aiSimilar.candidates.map((c) => (
+                    <li
+                      key={c.id}
+                      style={{
+                        borderBottom: "1px solid var(--border, #e5e7eb)",
+                        padding: "0.5rem 0",
+                      }}
+                    >
+                      <label style={{ display: "flex", gap: "0.5rem", alignItems: "flex-start" }}>
+                        <input
+                          type="checkbox"
+                          checked={similarSelected[c.id] ?? false}
+                          onChange={(e) =>
+                            setSimilarSelected((prev) => ({
+                              ...prev,
+                              [c.id]: e.target.checked,
+                            }))
+                          }
+                        />
+                        <span>
+                          <strong>{c.title || "Untitled"}</strong>
+                          <div className="muted" style={{ fontSize: "0.85rem" }}>
+                            Score {(c.score * 100).toFixed(0)}% · {c.reason}
+                          </div>
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+                <div className="modal-actions" style={{ marginTop: "1rem" }}>
+                  <button type="button" className="btn btn-ghost" onClick={() => setAiSimilar(null)}>
+                    Close
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => void runMergePreviewFromSimilar()}
+                  >
+                    Preview merge
+                  </button>
+                </div>
+              </>
+            )}
+            {aiSimilar.candidates.length === 0 && (
+              <div className="modal-actions" style={{ marginTop: "1rem" }}>
+                <button type="button" className="btn btn-ghost" onClick={() => setAiSimilar(null)}>
+                  Close
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {aiMerge && (
+        <div className="modal-backdrop" role="presentation" onClick={() => setAiMerge(null)}>
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ai-merge-title"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: 640 }}
+          >
+            <h3 id="ai-merge-title" style={{ marginTop: 0 }}>
+              Merge preview
+            </h3>
+            {aiMerge.warnings.length > 0 && (
+              <ul className="muted" style={{ fontSize: "0.9rem" }}>
+                {aiMerge.warnings.map((w) => (
+                  <li key={w}>{w}</li>
+                ))}
+              </ul>
+            )}
+            <div
+              className="ProseMirror ai-modal-preview"
+              style={{ maxHeight: "40vh", overflow: "auto", marginBottom: "1rem" }}
+              dangerouslySetInnerHTML={{ __html: aiMerge.mergedHtml }}
+            />
+            <div className="modal-actions">
+              <button type="button" className="btn btn-ghost" onClick={() => setAiMerge(null)}>
+                Back
+              </button>
+              <button type="button" className="btn btn-primary" onClick={() => void commitMerge()}>
+                Confirm merge
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {aiOrganize && (
+        <div className="modal-backdrop" role="presentation" onClick={() => setAiOrganize(null)}>
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ai-org-title"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: 560 }}
+          >
+            <h3 id="ai-org-title" style={{ marginTop: 0 }}>
+              Notebook suggestions
+            </h3>
+            <p className="muted">
+              Accept moves you agree with. Nothing changes until you apply.
+            </p>
+            {aiOrganize.suggestions.length === 0 ? (
+              <p className="muted">No moves suggested for this notebook.</p>
+            ) : (
+              <ul style={{ listStyle: "none", padding: 0, margin: "1rem 0" }}>
+                {aiOrganize.suggestions.map((s) => {
+                  const nbName =
+                    notebooks.find((b) => b.id === s.suggestedNotebookId)?.name ??
+                    s.suggestedNotebookId;
+                  const noteTitle =
+                    notesSorted.find((n) => n.id === s.noteId)?.title?.trim() || "Untitled";
+                  return (
+                    <li
+                      key={s.noteId}
+                      style={{
+                        borderBottom: "1px solid var(--border, #e5e7eb)",
+                        padding: "0.5rem 0",
+                      }}
+                    >
+                      <label style={{ display: "flex", gap: "0.5rem", alignItems: "flex-start" }}>
+                        <input
+                          type="checkbox"
+                          checked={aiOrganize.accepted[s.noteId] ?? false}
+                          onChange={(e) =>
+                            setAiOrganize((prev) =>
+                              prev
+                                ? {
+                                    ...prev,
+                                    accepted: {
+                                      ...prev.accepted,
+                                      [s.noteId]: e.target.checked,
+                                    },
+                                  }
+                                : prev
+                            )
+                          }
+                        />
+                        <span>
+                          <strong>{noteTitle}</strong>
+                          <div style={{ fontSize: "0.9rem" }}>
+                            → <em>{nbName}</em> ({Math.round(s.confidence * 100)}%)
+                          </div>
+                          <div className="muted" style={{ fontSize: "0.85rem" }}>
+                            {s.reason}
+                          </div>
+                        </span>
+                      </label>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            <div className="modal-actions">
+              <button type="button" className="btn btn-ghost" onClick={() => setAiOrganize(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={aiOrganize.suggestions.length === 0}
+                onClick={() => void applyOrganize()}
+              >
+                Apply accepted
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {aiRewrite && (
+        <div className="modal-backdrop" role="presentation" onClick={() => setAiRewrite(null)}>
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ai-rewrite-title"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: 640 }}
+          >
+            <h3 id="ai-rewrite-title" style={{ marginTop: 0 }}>
+              Rewrite preview ({aiRewrite.preset})
+            </h3>
+            <p className="muted">Review the model output, then apply or cancel.</p>
+            <div
+              className="ProseMirror ai-modal-preview"
+              style={{ maxHeight: "45vh", overflow: "auto", marginBottom: "1rem" }}
+              dangerouslySetInnerHTML={{ __html: aiRewrite.preview }}
+            />
+            <div className="modal-actions">
+              <button type="button" className="btn btn-ghost" onClick={() => setAiRewrite(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  if (!editor || !activeNote) return;
+                  editor.commands.setContent(aiRewrite.preview, false);
+                  void persist(activeNote.id, titleRef.current, aiRewrite.preview);
+                  setAiRewrite(null);
+                }}
+              >
+                Apply to note
               </button>
             </div>
           </div>

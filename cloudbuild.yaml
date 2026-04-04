@@ -7,6 +7,9 @@ substitutions:
   # SPA origin(s) for CORS + cookies — must match where the web app is hosted (not the API URL).
   # Example: https://my-app.web.app  (omit or leave empty to avoid overwriting Cloud Run env).
   _FRONTEND_ORIGIN: ""
+  # Secret Manager *secret id* (not the value). Runtime loads the key via OPENAI_API_KEY_SECRET.
+  # Grant freenotes-api@PROJECT.iam.gserviceaccount.com secretAccessor on that secret.
+  _OPENAI_SECRET_ID: ""
 
 timeout: 1800s
 
@@ -63,6 +66,10 @@ steps:
         if [[ -n "${_FRONTEND_ORIGIN}" ]]; then
           gcloud run services update "${_SERVICE}" --region="${_REGION}" \
             --update-env-vars "FRONTEND_ORIGIN=${_FRONTEND_ORIGIN}"
+        fi
+        if [[ -n "${_OPENAI_SECRET_ID}" ]]; then
+          gcloud run services update "${_SERVICE}" --region="${_REGION}" \
+            --update-env-vars "OPENAI_API_KEY_SECRET=${_OPENAI_SECRET_ID}"
         fi
 
 images:

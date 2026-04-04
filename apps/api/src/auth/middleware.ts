@@ -2,11 +2,13 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { verifyGoogleIdToken } from "./google.js";
 import { signSessionToken, verifySessionToken } from "./session.js";
 import { config, isEmailAllowed } from "../config.js";
+import type { StoredPlan } from "../lib/aiAccess.js";
+import { userHasAiTier } from "../lib/aiAccess.js";
 import { getUserById, upsertUserByEmail } from "../data/store.js";
 
 declare module "fastify" {
   interface FastifyRequest {
-    user?: { id: string; email: string };
+    user?: { id: string; email: string; plan: StoredPlan };
   }
 }
 
@@ -26,7 +28,7 @@ export async function requireAuth(
     if (v) {
       const user = await getUserById(v.sub);
       if (user) {
-        request.user = { id: user.id, email: user.email };
+        request.user = { id: user.id, email: user.email, plan: user.plan };
         return;
       }
     }
@@ -54,7 +56,27 @@ export async function requireAuth(
     return;
   }
   const user = await upsertUserByEmail(payload.email);
-  request.user = { id: user.id, email: user.email };
+  const profile = await getUserById(user.id);
+  request.user = {
+    id: user.id,
+    email: user.email,
+    plan: profile?.plan ?? "free",
+  };
+}
+
+export async function requireAiTier(
+  request: FastifyRequest,
+  reply: FastifyReply
+): Promise<void> {
+  const u = request.user;
+  if (!u) {
+    void reply.status(401).send({ error: "Unauthorized" });
+    return;
+  }
+  if (!userHasAiTier(u.email, u.plan)) {
+    void reply.status(403).send({ error: "AI tier required" });
+    return;
+  }
 }
 
 export async function setSessionCookie(
