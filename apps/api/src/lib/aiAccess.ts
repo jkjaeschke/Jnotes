@@ -8,14 +8,15 @@ export function normalizeStoredPlan(raw: unknown): StoredPlan {
 
 /**
  * True when the user may call AI-tier API routes.
- * Pre-billing: if Stripe checkout is off but an OpenAI key is configured (env or Secret Manager),
- * all signed-in users are treated as AI-eligible. Once `ENABLE_STRIPE_CHECKOUT=1`, use Firestore
- * `plan: "ai"`, `DEV_GRANT_AI=1`, or `AI_TIER_BYPASS_EMAILS` instead.
+ * Pre-billing: while `ENABLE_STRIPE_CHECKOUT` is off, every signed-in user is AI-eligible (tidy,
+ * similar notes, merge, organize). Rewrite still returns 503 until an OpenAI key is configured.
+ * After checkout is enabled, use Firestore `plan: "ai"`, `DEV_GRANT_AI=1`, or
+ * `AI_TIER_BYPASS_EMAILS`.
  */
 export function userHasAiTier(email: string, storedPlan: StoredPlan): boolean {
   if (config.devGrantAi) return true;
   if (config.aiTierBypassEmails.includes(email.toLowerCase().trim())) return true;
   if (storedPlan === "ai") return true;
-  if (!config.enableStripeCheckout && config.openaiApiKey.length > 0) return true;
+  if (!config.enableStripeCheckout) return true;
   return false;
 }

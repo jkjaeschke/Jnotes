@@ -1267,7 +1267,7 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
                     !activeNote
                       ? undefined
                       : !aiTierActive
-                        ? "AI tier not enabled for this account — check API: OPENAI key + billing off, or users.plan=ai / DEV_GRANT_AI=1"
+                        ? "AI tier not enabled — with Stripe checkout on, use Firestore plan=ai or DEV_GRANT_AI=1"
                         : "AI tools"
                   }
                   aria-expanded={aiToolbarOpen}
@@ -1278,7 +1278,7 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
                     if (!activeNote) return;
                     if (!aiTierActive) {
                       setErr(
-                        "AI tier is not enabled for your account. In local dev the API enables it automatically when NODE_ENV=development; in production set users.plan to \"ai\" in Firestore or set DEV_GRANT_AI=1 on the server."
+                        "AI tier is not enabled. With billing/checkout enabled, set users.plan to \"ai\" in Firestore or DEV_GRANT_AI=1 / AI_TIER_BYPASS_EMAILS on the API."
                       );
                       return;
                     }
