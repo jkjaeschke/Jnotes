@@ -51,8 +51,31 @@ function currentAlign(editor: Editor | null): "left" | "center" | "right" | "jus
   return "left";
 }
 
+/**
+ * Office-friendly faces first (Calibri/Cambria need local install — typical on Windows + Microsoft 365).
+ * Values are full stacks so selection still looks reasonable on macOS/Linux without those fonts.
+ */
 const FONT_OPTIONS: { label: string; value: string }[] = [
   { label: "Default", value: "" },
+  {
+    label: "Calibri",
+    value:
+      'Calibri, "Candara", "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif',
+  },
+  {
+    label: "Cambria",
+    value: 'Cambria, "Times New Roman", "Liberation Serif", Georgia, serif',
+  },
+  {
+    label: "Segoe UI",
+    value: '"Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
+  },
+  { label: "Arial", value: "Arial, Helvetica, sans-serif" },
+  {
+    label: "Times New Roman",
+    value: '"Times New Roman", Times, "Liberation Serif", serif',
+  },
+  { label: "Verdana", value: "Verdana, Geneva, sans-serif" },
   { label: "Sans serif", value: "ui-sans-serif, system-ui, sans-serif" },
   { label: "Serif", value: "ui-serif, Georgia, serif" },
   { label: "Monospace", value: "ui-monospace, SFMono-Regular, Menlo, monospace" },
@@ -238,7 +261,7 @@ export function NoteEditorToolbar({ editor }: Props) {
         </label>
         <select
           id="note-font-family"
-          className="input editor-toolbar-select"
+          className="input editor-toolbar-select editor-toolbar-select-font"
           value={fontSelectValue}
           onChange={(e) => {
             const v = e.target.value;

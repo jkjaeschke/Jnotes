@@ -861,6 +861,12 @@ button {
   max-width: 6rem;
 }
 
+/* Font list includes longer labels (e.g. Times New Roman). */
+.editor-toolbar-select-font {
+  min-width: 7.25rem;
+  max-width: 13rem;
+}
+
 .editor-color-swatch {
   width: 2rem;
   height: 2rem;
