@@ -1067,6 +1067,207 @@ button.sidebar-nav-link {
   margin-top: 1rem;
 }
 
+.modal.ai-review-modal {
+  max-width: min(56rem, calc(100vw - 2rem));
+}
+
+.text-diff-panel {
+  max-height: 28vh;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+  margin-bottom: 1rem;
+}
+
+/* One block per diff hunk so removed/added lines never flow together on one row */
+.text-diff-row {
+  display: block;
+  width: 100%;
+  box-decoration-break: clone;
+}
+
+.text-diff-row.text-diff-added {
+  background: rgba(34, 197, 94, 0.2);
+}
+
+.text-diff-row.text-diff-removed {
+  background: rgba(239, 68, 68, 0.15);
+  text-decoration: line-through;
+}
+
+.ai-compare-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.ai-compare-col {
+  min-width: 0;
+}
+
+@media (max-width: 700px) {
+  .ai-compare-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ai-compare-heading {
+  margin: 0 0 0.35rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.ai-modal-preview {
+  max-height: 32vh;
+  overflow: auto;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 0.9rem;
+  min-width: 0;
+}
+
+/*
+ * AI modal columns use `dangerouslySetInnerHTML` — do NOT use class `ProseMirror` here.
+ * Global `.ProseMirror li[data-type="taskItem"] { display: flex }` applies to any node with that class
+ * and breaks LLM output that fakes task items without TipTap’s checkbox <label>.
+ */
+.ai-note-html-preview {
+  color: var(--text);
+  line-height: 1.45;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.ai-note-html-preview p {
+  margin: 0.35rem 0;
+}
+
+.ai-note-html-preview h1,
+.ai-note-html-preview h2,
+.ai-note-html-preview h3 {
+  margin: 0.65rem 0 0.35rem;
+  line-height: 1.25;
+}
+
+.ai-note-html-preview h1 {
+  font-size: 1.35rem;
+}
+
+.ai-note-html-preview h2 {
+  font-size: 1.15rem;
+}
+
+.ai-note-html-preview h3 {
+  font-size: 1.02rem;
+}
+
+.ai-note-html-preview img.note-body-img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  margin: 0.35rem 0;
+}
+
+.ai-note-html-preview ul:not([data-type="taskList"]),
+.ai-note-html-preview ol {
+  margin: 0.35rem 0;
+  padding-left: 1.35rem;
+}
+
+.ai-note-html-preview ul:not([data-type="taskList"]) > li > p,
+.ai-note-html-preview ol > li > p {
+  margin-top: 0;
+  margin-bottom: 0.25em;
+}
+
+.ai-note-html-preview ul:not([data-type="taskList"]) > li > p:last-child,
+.ai-note-html-preview ol > li > p:last-child {
+  margin-bottom: 0;
+}
+
+/* TipTap task lists: flex only when the real checkbox label exists */
+.ai-note-html-preview ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+  margin: 0.35rem 0;
+}
+
+.ai-note-html-preview ul[data-type="taskList"] ul[data-type="taskList"] {
+  margin: 0.15rem 0 0.15rem 1rem;
+}
+
+.ai-note-html-preview li[data-type="taskItem"]:has(> label) {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+}
+
+.ai-note-html-preview li[data-type="taskItem"]:has(> label) > label {
+  flex-shrink: 0;
+  margin: 0.15rem 0 0;
+  user-select: none;
+}
+
+.ai-note-html-preview li[data-type="taskItem"]:has(> label) > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.ai-note-html-preview ul[data-type="taskList"]:not(:has(> li > label)) {
+  list-style: disc;
+  list-style-position: outside;
+  padding-left: 1.35rem;
+}
+
+.ai-note-html-preview ul[data-type="taskList"]:not(:has(> li > label)) > li[data-type="taskItem"] {
+  display: list-item;
+}
+
+.ai-note-html-preview li[data-type="taskItem"]:not(:has(> label)) {
+  display: list-item;
+}
+
+.ai-note-html-preview li[data-type="taskItem"]:not(:has(> label)) > div {
+  display: block;
+}
+
+.ai-note-html-preview mark {
+  border-radius: 2px;
+  padding: 0 0.05em;
+}
+
+.ai-note-html-preview blockquote {
+  margin: 0.35rem 0;
+  padding-left: 0.75rem;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+
+.ai-note-html-preview a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.ai-note-html-preview ul[data-type="taskList"] li[data-type="taskItem"]:has(> label) > div p {
+  margin-top: 0;
+  margin-bottom: 0.25em;
+}
+
+.ai-note-html-preview ul[data-type="taskList"] li[data-type="taskItem"]:has(> label) > div p:last-child {
+  margin-bottom: 0;
+}
+
 .note-item {
   width: 100%;
   text-align: left;

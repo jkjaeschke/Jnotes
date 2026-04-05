@@ -18,6 +18,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useWorkspaceOutlet } from "../workspaceOutletContext.js";
 import { NoteEditorToolbar } from "../components/NoteEditorToolbar.js";
+import { TextDiffPanel } from "../components/TextDiffPanel.js";
+import { normalizeNoteHtmlForPreview } from "../normalizeNoteHtmlPreview.js";
 import { apiGet, apiSend, apiUpload } from "../api.js";
 import {
   readLastNotebookId,
@@ -157,7 +159,12 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
   const [moveNote, setMoveNote] = useState<Note | null>(null);
   const [moveTargetNotebookId, setMoveTargetNotebookId] = useState<string>("");
   const [aiToolbarOpen, setAiToolbarOpen] = useState(false);
-  const [aiTidy, setAiTidy] = useState<{ preview: string } | null>(null);
+  const [aiCleanupReview, setAiCleanupReview] = useState<{
+    beforeHtml: string;
+    afterHtml: string;
+    beforeText: string;
+    afterText: string;
+  } | null>(null);
   const [aiSimilar, setAiSimilar] = useState<{
     noteId: string;
     sourceTitle: string;
@@ -171,12 +178,14 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
     otherIds: string[];
     mergedHtml: string;
     warnings: string[];
+    beforeHtml: string;
+    beforeText: string;
+    afterText: string;
   } | null>(null);
   const [aiOrganize, setAiOrganize] = useState<{
     suggestions: OrganizeSuggestion[];
     accepted: Record<string, boolean>;
   } | null>(null);
-  const [aiRewrite, setAiRewrite] = useState<{ preset: string; preview: string } | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editorRef = useRef<Editor | null>(null);
   const googleTokenRef = useRef(googleToken);
@@ -645,32 +654,26 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
     await deleteNoteById(activeNote);
   }, [activeNote, deleteNoteById]);
 
-  const closeAiModals = useCallback(() => {
-    setAiTidy(null);
-    setAiSimilar(null);
-    setSimilarSelected({});
-    setAiMerge(null);
-    setAiOrganize(null);
-    setAiRewrite(null);
-    setAiToolbarOpen(false);
-  }, []);
-
-  const runTidyPreview = useCallback(async () => {
-    if (!editor || !aiTierActive) return;
+  const runCleanupPreview = useCallback(async () => {
+    if (!editor || !aiTierActive || !activeNote) return;
     try {
       const html = editor.getHTML();
-      const r = await apiSend<{ html: string }>(
-        "/api/ai/tidy-html",
-        "POST",
-        { html },
-        googleToken
-      );
+      const r = await apiSend<{
+        html: string;
+        beforeText: string;
+        afterText: string;
+      }>("/api/ai/cleanup-note", "POST", { html }, googleToken);
       setAiToolbarOpen(false);
-      setAiTidy({ preview: r.html });
+      setAiCleanupReview({
+        beforeHtml: html,
+        afterHtml: r.html,
+        beforeText: r.beforeText,
+        afterText: r.afterText,
+      });
     } catch (e) {
       setErr(String(e));
     }
-  }, [editor, aiTierActive, googleToken]);
+  }, [editor, aiTierActive, activeNote, googleToken]);
 
   const openSimilarForNote = useCallback(
     async (noteId: string, scope: "notebook" | "all", sourceTitle?: string) => {
@@ -715,7 +718,13 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
       return;
     }
     try {
-      const r = await apiSend<{ mergedHtml: string; warnings: string[] }>(
+      const r = await apiSend<{
+        mergedHtml: string;
+        warnings: string[];
+        beforeHtml: string;
+        beforeText: string;
+        afterText: string;
+      }>(
         "/api/ai/merge-preview",
         "POST",
         { primaryNoteId: primary, otherNoteIds },
@@ -726,6 +735,9 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
         otherIds: otherNoteIds,
         mergedHtml: r.mergedHtml,
         warnings: r.warnings,
+        beforeHtml: r.beforeHtml,
+        beforeText: r.beforeText,
+        afterText: r.afterText,
       });
     } catch (e) {
       setErr(String(e));
@@ -798,31 +810,29 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
     }
   }, [aiOrganize, googleToken, loadNotes, loadLibrary, onNotebooksChanged]);
 
-  const runRewrite = useCallback(
-    async (preset: "concise" | "meeting" | "checklist") => {
-      if (!editor || !aiTierActive) return;
-      try {
-        const html = editor.getHTML();
-        const r = await apiSend<{ html: string }>(
-          "/api/ai/rewrite",
-          "POST",
-          { html, preset },
-          googleToken
-        );
-        setAiToolbarOpen(false);
-        setAiRewrite({ preset, preview: r.html });
-      } catch (e) {
-        setErr(String(e));
-      }
-    },
-    [editor, aiTierActive, googleToken]
-  );
-
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (aiTidy || aiSimilar || aiMerge || aiOrganize || aiRewrite) {
-        closeAiModals();
+      if (aiMerge) {
+        setAiMerge(null);
+        setAiToolbarOpen(false);
+        return;
+      }
+      if (aiCleanupReview) {
+        setAiCleanupReview(null);
+        setAiToolbarOpen(false);
+        return;
+      }
+      if (aiSimilar) {
+        setAiSimilar(null);
+        setSimilarSelected({});
+        setAiMerge(null);
+        setAiToolbarOpen(false);
+        return;
+      }
+      if (aiOrganize) {
+        setAiOrganize(null);
+        setAiToolbarOpen(false);
         return;
       }
       if (moveNote) {
@@ -836,12 +846,10 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
   }, [
     moveNote,
     closeNoteMenus,
-    closeAiModals,
-    aiTidy,
+    aiCleanupReview,
     aiSimilar,
     aiMerge,
     aiOrganize,
-    aiRewrite,
   ]);
 
   const renderNotebookButton = (nb: Notebook) => (
@@ -1297,9 +1305,9 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
                         type="button"
                         role="menuitem"
                         className="note-actions-menu-item"
-                        onClick={() => void runTidyPreview()}
+                        onClick={() => void runCleanupPreview()}
                       >
-                        Tidy HTML…
+                        Cleanup note…
                       </button>
                     </li>
                     <li role="none">
@@ -1307,29 +1315,16 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
                         type="button"
                         role="menuitem"
                         className="note-actions-menu-item"
-                        onClick={() => void runRewrite("concise")}
+                        onClick={() => {
+                          setAiToolbarOpen(false);
+                          void openSimilarForNote(
+                            activeNote.id,
+                            "all",
+                            activeNote.title
+                          );
+                        }}
                       >
-                        Rewrite: Concise…
-                      </button>
-                    </li>
-                    <li role="none">
-                      <button
-                        type="button"
-                        role="menuitem"
-                        className="note-actions-menu-item"
-                        onClick={() => void runRewrite("meeting")}
-                      >
-                        Rewrite: Meeting notes…
-                      </button>
-                    </li>
-                    <li role="none">
-                      <button
-                        type="button"
-                        role="menuitem"
-                        className="note-actions-menu-item"
-                        onClick={() => void runRewrite("checklist")}
-                      >
-                        Rewrite: Checklist…
+                        Consolidate notes…
                       </button>
                     </li>
                   </ul>
@@ -1509,39 +1504,67 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
         </div>
       )}
 
-      {aiTidy && (
-        <div className="modal-backdrop" role="presentation" onClick={() => setAiTidy(null)}>
+      {aiCleanupReview && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => setAiCleanupReview(null)}
+        >
           <div
-            className="modal"
+            className="modal ai-review-modal"
             role="dialog"
             aria-modal="true"
-            aria-labelledby="ai-tidy-title"
+            aria-labelledby="ai-cleanup-title"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 id="ai-tidy-title" style={{ marginTop: 0 }}>
-              Tidy HTML
+            <h3 id="ai-cleanup-title" style={{ marginTop: 0 }}>
+              Cleanup note
             </h3>
-            <p className="muted">Preview the cleaned HTML, then apply it to this note.</p>
-            <div
-              className="ProseMirror ai-modal-preview"
-              style={{ maxHeight: "45vh", overflow: "auto", marginBottom: "1rem" }}
-              dangerouslySetInnerHTML={{ __html: aiTidy.preview }}
+            <p className="muted">
+              Review spelling, wording, and formatting changes. Green adds, red removes (plain-text
+              view). Approve only if you are happy to replace the note body.
+            </p>
+            <TextDiffPanel
+              before={aiCleanupReview.beforeText}
+              after={aiCleanupReview.afterText}
             />
+            <div className="ai-compare-row">
+              <div className="ai-compare-col">
+                <h4 className="ai-compare-heading">Current</h4>
+                <div
+                  className="ai-note-html-preview ai-modal-preview"
+                  dangerouslySetInnerHTML={{ __html: aiCleanupReview.beforeHtml }}
+                />
+              </div>
+              <div className="ai-compare-col">
+                <h4 className="ai-compare-heading">Proposed</h4>
+                <div
+                  className="ai-note-html-preview ai-modal-preview"
+                  dangerouslySetInnerHTML={{
+                    __html: normalizeNoteHtmlForPreview(aiCleanupReview.afterHtml),
+                  }}
+                />
+              </div>
+            </div>
             <div className="modal-actions">
-              <button type="button" className="btn btn-ghost" onClick={() => setAiTidy(null)}>
-                Cancel
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setAiCleanupReview(null)}
+              >
+                Reject
               </button>
               <button
                 type="button"
                 className="btn btn-primary"
                 onClick={() => {
                   if (!editor || !activeNote) return;
-                  editor.commands.setContent(aiTidy.preview, false);
-                  void persist(activeNote.id, titleRef.current, aiTidy.preview);
-                  setAiTidy(null);
+                  editor.commands.setContent(aiCleanupReview.afterHtml, false);
+                  void persist(activeNote.id, titleRef.current, aiCleanupReview.afterHtml);
+                  setAiCleanupReview(null);
                 }}
               >
-                Apply to note
+                Approve
               </button>
             </div>
           </div>
@@ -1559,11 +1582,13 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
             style={{ maxWidth: 520 }}
           >
             <h3 id="ai-similar-title" style={{ marginTop: 0 }}>
-              Similar notes
+              Consolidate notes
             </h3>
             <p className="muted" style={{ marginBottom: "0.75rem" }}>
-              Source: “{aiSimilar.sourceTitle}” ·{" "}
-              {aiSimilar.scope === "notebook" ? "This notebook only" : "All your notebooks"}
+              Similar notes to “{aiSimilar.sourceTitle}” ·{" "}
+              {aiSimilar.scope === "notebook" ? "This notebook only" : "All your notebooks"}.
+              Choose a primary note and which others to merge into it, then preview the combined
+              body.
             </p>
             {aiSimilar.candidates.length === 0 ? (
               <p className="muted">No similar notes found.</p>
@@ -1647,16 +1672,19 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
       {aiMerge && (
         <div className="modal-backdrop" role="presentation" onClick={() => setAiMerge(null)}>
           <div
-            className="modal"
+            className="modal ai-review-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="ai-merge-title"
             onClick={(e) => e.stopPropagation()}
-            style={{ maxWidth: 640 }}
           >
             <h3 id="ai-merge-title" style={{ marginTop: 0 }}>
               Merge preview
             </h3>
+            <p className="muted">
+              Compare the primary note’s body to the merged result. Reject to adjust your selection;
+              approve to save the primary and remove merged notes.
+            </p>
             {aiMerge.warnings.length > 0 && (
               <ul className="muted" style={{ fontSize: "0.9rem" }}>
                 {aiMerge.warnings.map((w) => (
@@ -1664,17 +1692,31 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
                 ))}
               </ul>
             )}
-            <div
-              className="ProseMirror ai-modal-preview"
-              style={{ maxHeight: "40vh", overflow: "auto", marginBottom: "1rem" }}
-              dangerouslySetInnerHTML={{ __html: aiMerge.mergedHtml }}
-            />
+            <TextDiffPanel before={aiMerge.beforeText} after={aiMerge.afterText} />
+            <div className="ai-compare-row">
+              <div className="ai-compare-col">
+                <h4 className="ai-compare-heading">Primary (current)</h4>
+                <div
+                  className="ai-note-html-preview ai-modal-preview"
+                  dangerouslySetInnerHTML={{ __html: aiMerge.beforeHtml }}
+                />
+              </div>
+              <div className="ai-compare-col">
+                <h4 className="ai-compare-heading">Merged (proposed)</h4>
+                <div
+                  className="ai-note-html-preview ai-modal-preview"
+                  dangerouslySetInnerHTML={{
+                    __html: normalizeNoteHtmlForPreview(aiMerge.mergedHtml),
+                  }}
+                />
+              </div>
+            </div>
             <div className="modal-actions">
               <button type="button" className="btn btn-ghost" onClick={() => setAiMerge(null)}>
-                Back
+                Reject
               </button>
               <button type="button" className="btn btn-primary" onClick={() => void commitMerge()}>
-                Confirm merge
+                Approve merge
               </button>
             </div>
           </div>
@@ -1765,45 +1807,6 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
         </div>
       )}
 
-      {aiRewrite && (
-        <div className="modal-backdrop" role="presentation" onClick={() => setAiRewrite(null)}>
-          <div
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="ai-rewrite-title"
-            onClick={(e) => e.stopPropagation()}
-            style={{ maxWidth: 640 }}
-          >
-            <h3 id="ai-rewrite-title" style={{ marginTop: 0 }}>
-              Rewrite preview ({aiRewrite.preset})
-            </h3>
-            <p className="muted">Review the model output, then apply or cancel.</p>
-            <div
-              className="ProseMirror ai-modal-preview"
-              style={{ maxHeight: "45vh", overflow: "auto", marginBottom: "1rem" }}
-              dangerouslySetInnerHTML={{ __html: aiRewrite.preview }}
-            />
-            <div className="modal-actions">
-              <button type="button" className="btn btn-ghost" onClick={() => setAiRewrite(null)}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => {
-                  if (!editor || !activeNote) return;
-                  editor.commands.setContent(aiRewrite.preview, false);
-                  void persist(activeNote.id, titleRef.current, aiRewrite.preview);
-                  setAiRewrite(null);
-                }}
-              >
-                Apply to note
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

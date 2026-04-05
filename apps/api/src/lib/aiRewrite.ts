@@ -1,4 +1,5 @@
 import { config } from "../config.js";
+import { tidyHtml } from "./tidyHtml.js";
 
 export type RewritePreset = "concise" | "meeting" | "checklist";
 
@@ -11,17 +12,16 @@ const PRESET_INSTRUCTIONS: Record<RewritePreset, string> = {
     "Rewrite as a clear checklist: use task lists or bullet points where appropriate. Output valid HTML fragments only.",
 };
 
-export async function rewriteNoteHtml(
-  html: string,
-  preset: RewritePreset
-): Promise<string> {
+const CLEANUP_FOR_SHARING_SYSTEM =
+  "You clean up notes for sharing with colleagues. Fix spelling and grammar, improve clarity and consistent formatting (headings, lists, paragraphs). Preserve meaning and do not invent facts or new content. Output valid HTML fragments only (no markdown, no preamble).";
+
+async function chatCompleteHtml(system: string, html: string): Promise<string> {
   const key = config.openaiApiKey;
   if (!key) {
     throw new Error("Rewrite is not configured (missing OPENAI_API_KEY)");
   }
   const model = config.openaiModel;
   const url = `${config.openaiApiBase}/chat/completions`;
-  const system = PRESET_INSTRUCTIONS[preset];
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -36,7 +36,7 @@ export async function rewriteNoteHtml(
         { role: "system", content: system },
         {
           role: "user",
-          content: `Here is the note HTML to rewrite:\n\n${html.slice(0, 120_000)}`,
+          content: `Here is the note HTML:\n\n${html.slice(0, 120_000)}`,
         },
       ],
     }),
@@ -56,4 +56,22 @@ export async function rewriteNoteHtml(
     .replace(/\s*```$/i, "")
     .trim();
   return cleaned || "<p></p>";
+}
+
+export async function rewriteNoteHtml(
+  html: string,
+  preset: RewritePreset
+): Promise<string> {
+  return chatCompleteHtml(PRESET_INSTRUCTIONS[preset], html);
+}
+
+/** LLM cleanup for spelling/formatting, then deterministic HTML tidy. */
+export async function cleanupNoteForSharingHtml(html: string): Promise<string> {
+  let out = await chatCompleteHtml(CLEANUP_FOR_SHARING_SYSTEM, html);
+  try {
+    out = tidyHtml(out);
+  } catch {
+    /* keep model output if tidy throws */
+  }
+  return out;
 }

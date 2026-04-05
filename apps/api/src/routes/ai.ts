@@ -6,7 +6,11 @@ import * as store from "../data/store.js";
 import { rankSimilarNotes } from "../lib/aiSimilarity.js";
 import { buildMergedNotesHtml } from "../lib/aiMerge.js";
 import { suggestNotebookMoves } from "../lib/aiOrganize.js";
-import { rewriteNoteHtml, type RewritePreset } from "../lib/aiRewrite.js";
+import {
+  cleanupNoteForSharingHtml,
+  rewriteNoteHtml,
+  type RewritePreset,
+} from "../lib/aiRewrite.js";
 import { tidyHtml } from "../lib/tidyHtml.js";
 import { htmlToPlainText } from "../lib/htmlToPlain.js";
 
@@ -105,7 +109,57 @@ export function registerAiRoutes(app: FastifyInstance) {
         ordered.push({ id: n.id, title: n.title, body: n.body });
       }
       const { mergedHtml, warnings } = buildMergedNotesHtml(ordered);
-      return { mergedHtml, warnings };
+      const beforeText = htmlToPlainText(primary.body);
+      const afterText = htmlToPlainText(mergedHtml);
+      return {
+        mergedHtml,
+        warnings,
+        beforeHtml: primary.body,
+        beforeText,
+        afterText,
+      };
+    }
+  );
+
+  app.post(
+    "/api/ai/cleanup-note",
+    { ...aiPre, bodyLimit: AI_BODY_LIMIT },
+    async (request, reply) => {
+      const schema = z.object({
+        html: z.string().min(1).max(AI_BODY_LIMIT),
+      });
+      const parsed = schema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: "Invalid body" });
+      }
+      if (!config.openaiApiKey) {
+        return reply.status(503).send({
+          error:
+            "Cleanup needs OPENAI_API_KEY or OPENAI_API_KEY_SECRET (GCP Secret Manager).",
+        });
+      }
+      const userId = request.user!.id;
+      const inputHtml = parsed.data.html;
+      const beforeText = htmlToPlainText(inputHtml);
+      const allowed = await store.consumeAiRewriteQuota(
+        userId,
+        config.aiRewriteMonthlyCap
+      );
+      if (!allowed) {
+        return reply.status(429).send({
+          error: `Monthly AI edit limit reached (${config.aiRewriteMonthlyCap}).`,
+        });
+      }
+      try {
+        const html = await cleanupNoteForSharingHtml(inputHtml);
+        const afterText = htmlToPlainText(html);
+        return { html, beforeText, afterText };
+      } catch (e) {
+        await store.refundAiRewriteQuota(userId);
+        return reply.status(502).send({
+          error: e instanceof Error ? e.message : "Cleanup failed",
+        });
+      }
     }
   );
 
