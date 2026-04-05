@@ -1102,6 +1102,22 @@ button.sidebar-nav-link {
   text-decoration: line-through;
 }
 
+.consolidate-empty-body-preview {
+  margin-top: 0.35rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-subtle);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 6.5rem;
+  overflow: auto;
+  color: var(--text);
+}
+
 .ai-compare-row {
   display: grid;
   grid-template-columns: 1fr 1fr;

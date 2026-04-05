@@ -3,7 +3,10 @@ import { z } from "zod";
 import { requireAiTier, requireAuth } from "../auth/middleware.js";
 import { config } from "../config.js";
 import * as store from "../data/store.js";
-import { rankSimilarNotes } from "../lib/aiSimilarity.js";
+import {
+  isEmptyNoteBody,
+  rankSimilarNotes,
+} from "../lib/aiSimilarity.js";
 import { buildMergedNotesHtml } from "../lib/aiMerge.js";
 import { suggestNotebookMoves } from "../lib/aiOrganize.js";
 import {
@@ -66,8 +69,26 @@ export function registerAiRoutes(app: FastifyInstance) {
       title: note.title,
       bodyText: note.bodyText,
     };
-    const ranked = rankSimilarNotes(source, summaries, parsed.data.limit);
+    const nonEmptyForRank = summaries.filter(
+      (s) => s.id === note.id || !isEmptyNoteBody(s.bodyText)
+    );
+    const ranked = rankSimilarNotes(source, nonEmptyForRank, parsed.data.limit);
     const titleById = new Map(summaries.map((s) => [s.id, s.title]));
+    const emptyNotes = summaries
+      .filter(
+        (s) => s.id !== note.id && isEmptyNoteBody(s.bodyText)
+      )
+      .map((s) => {
+        const raw = (s.bodyText ?? "").trim();
+        const bodyPreview =
+          raw.length > 0 ? raw.slice(0, 2_000) : "";
+        return {
+          id: s.id,
+          title: (s.title ?? "").trim() || "Untitled",
+          bodyPreview,
+        };
+      })
+      .slice(0, 80);
     return {
       candidates: ranked.map((c) => ({
         id: c.id,
@@ -75,6 +96,7 @@ export function registerAiRoutes(app: FastifyInstance) {
         reason: c.reason,
         title: (titleById.get(c.id) ?? "").trim() || "Untitled",
       })),
+      emptyNotes,
     };
   });
 

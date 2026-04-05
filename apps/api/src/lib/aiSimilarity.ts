@@ -1,11 +1,20 @@
 import type { NoteAiSummary } from "../data/store.js";
 
-function words(s: string): Set<string> {
+/** English stopwords — excluded so Jaccard reflects topical overlap, not boilerplate. */
+const STOPWORDS = new Set(
+  "a about above after again against all am an and any are as at be because been before being below between both but by could did do does doing down during each few for from further had has have having he her here hers herself him himself his how i if into is it its itself just me more most my myself no nor not now of off on once only or other our ours ourselves out over own same she should so some such than that the their theirs them themselves then there these they this those through to too under until up very was we were what when where which while who whom why will with you your yours yourself yourselves".split(
+    /\s+/u
+  )
+);
+
+function tokenizeMeaningful(s: string): Set<string> {
   const set = new Set<string>();
   const lower = s.toLowerCase();
   const parts = lower.split(/[^a-z0-9]+/u);
   for (const w of parts) {
-    if (w.length > 1) set.add(w);
+    if (w.length < 2) continue;
+    if (STOPWORDS.has(w)) continue;
+    set.add(w);
   }
   return set;
 }
@@ -20,16 +29,36 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   return union ? inter / union : 0;
 }
 
-function titleScore(a: string, b: string): number {
-  const ta = words(a);
-  const tb = words(b);
-  return jaccard(ta, tb);
+export function isGenericTitle(title: string): boolean {
+  const t = title.trim().toLowerCase();
+  if (t.length === 0) return true;
+  return /^(untitled(\s+note)?|new\s+note|note\s*)$/.test(t);
 }
 
-function bodyScore(a: string, b: string): number {
-  const slice = 12_000;
-  return jaccard(words(a.slice(0, slice)), words(b.slice(0, slice)));
+/** True when the note has no meaningful body (merge/consolidate should not treat it as content). */
+export function isEmptyNoteBody(bodyText: string): boolean {
+  const t = bodyText.replace(/\s+/g, " ").trim();
+  if (t.length === 0) return true;
+  if (t.length < 20 && /^write your note/i.test(t)) return true;
+  return t.length < 12;
 }
+
+function titleSimilarity(a: string, b: string): number {
+  if (isGenericTitle(a) && isGenericTitle(b)) return 0;
+  return jaccard(tokenizeMeaningful(a), tokenizeMeaningful(b));
+}
+
+function bodySimilarity(a: string, b: string): number {
+  const slice = 14_000;
+  return jaccard(
+    tokenizeMeaningful(a.slice(0, slice)),
+    tokenizeMeaningful(b.slice(0, slice))
+  );
+}
+
+const MIN_SCORE = 0.16;
+const BODY_ENOUGH = 0.1;
+const TITLE_ENOUGH = 0.28;
 
 export type SimilarCandidate = {
   id: string;
@@ -45,16 +74,31 @@ export function rankSimilarNotes(
   const out: SimilarCandidate[] = [];
   for (const c of candidates) {
     if (c.id === source.id) continue;
-    const ts = titleScore(source.title, c.title);
-    const bs = bodyScore(source.bodyText, c.bodyText);
-    const score = Math.min(1, 0.45 * ts + 0.55 * bs);
-    if (score < 0.03) continue;
+    if (isEmptyNoteBody(c.bodyText)) continue;
+
+    const ts = titleSimilarity(source.title, c.title);
+    const bs = bodySimilarity(source.bodyText, c.bodyText);
+
+    const bothGenericTitles = isGenericTitle(source.title) && isGenericTitle(c.title);
+    if (bothGenericTitles && bs < BODY_ENOUGH) continue;
+
+    if (!bothGenericTitles && ts < TITLE_ENOUGH && bs < BODY_ENOUGH) continue;
+
+    let score: number;
+    if (bothGenericTitles) {
+      score = bs;
+    } else {
+      score = Math.min(1, 0.22 * ts + 0.78 * bs);
+    }
+
+    if (score < MIN_SCORE) continue;
+
     const reasons: string[] = [];
-    if (ts > 0.15) reasons.push("Similar title words");
-    if (bs > 0.08) reasons.push("Overlapping note text");
-    if (reasons.length === 0) reasons.push("Loose text overlap");
-    out.push({ id: c.id, score, reason: reasons.join("; ") });
+    if (ts >= TITLE_ENOUGH) reasons.push("Similar title");
+    if (bs >= BODY_ENOUGH) reasons.push("Similar note content");
+    if (reasons.length === 0) reasons.push("Related content");
+    out.push({ id: c.id, score, reason: reasons.join(" · ") });
   }
   out.sort((a, b) => b.score - a.score);
-  return out.slice(0, Math.max(1, Math.min(limit, 50)));
+  return out.slice(0, Math.min(limit, 50));
 }

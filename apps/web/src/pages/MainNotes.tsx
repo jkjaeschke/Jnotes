@@ -115,6 +115,15 @@ type SimilarCandidate = {
   title: string;
 };
 
+type EmptyNoteSuggestion = {
+  id: string;
+  title: string;
+  /** Plain-text body snippet so you can confirm the note is truly empty before deleting */
+  bodyPreview: string;
+};
+
+const MERGE_AUTO_CHECK_MIN_SCORE = 0.32;
+
 type OrganizeSuggestion = {
   noteId: string;
   suggestedNotebookId: string;
@@ -170,8 +179,13 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
     sourceTitle: string;
     scope: "notebook" | "all";
     candidates: SimilarCandidate[];
+    emptyNotes: EmptyNoteSuggestion[];
   } | null>(null);
   const [similarSelected, setSimilarSelected] = useState<Record<string, boolean>>({});
+  /** Empty-note rows: checked = include in bulk delete (default off until user reviews preview). */
+  const [emptyNotesDeleteSelected, setEmptyNotesDeleteSelected] = useState<
+    Record<string, boolean>
+  >({});
   const [mergePrimaryId, setMergePrimaryId] = useState<string>("");
   const [aiMerge, setAiMerge] = useState<{
     primaryId: string;
@@ -683,21 +697,31 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
         (sourceTitle ?? notesSorted.find((n) => n.id === noteId)?.title ?? "").trim() ||
         "Untitled";
       try {
-        const r = await apiSend<{ candidates: SimilarCandidate[] }>(
+        const r = await apiSend<{
+          candidates: SimilarCandidate[];
+          emptyNotes: EmptyNoteSuggestion[];
+        }>(
           "/api/ai/similar-notes",
           "POST",
           { noteId, scope, limit: 20 },
           googleToken
         );
         const sel: Record<string, boolean> = {};
-        for (const c of r.candidates) sel[c.id] = true;
+        for (const c of r.candidates) {
+          sel[c.id] = c.score >= MERGE_AUTO_CHECK_MIN_SCORE;
+        }
         setSimilarSelected(sel);
         setMergePrimaryId(noteId);
+        const emptyList = r.emptyNotes ?? [];
+        const emptySel: Record<string, boolean> = {};
+        for (const en of emptyList) emptySel[en.id] = false;
+        setEmptyNotesDeleteSelected(emptySel);
         setAiSimilar({
           noteId,
           sourceTitle: resolvedTitle,
           scope,
           candidates: r.candidates,
+          emptyNotes: emptyList,
         });
       } catch (e) {
         setErr(String(e));
@@ -705,6 +729,57 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
     },
     [aiTierActive, closeNoteMenus, googleToken, notesSorted]
   );
+
+  const deleteEmptySuggestedNotes = useCallback(async () => {
+    if (!aiSimilar?.emptyNotes.length) return;
+    const list = aiSimilar.emptyNotes.filter(
+      (en) => emptyNotesDeleteSelected[en.id]
+    );
+    if (list.length === 0) {
+      setErr(
+        "Select one or more notes to delete after reviewing the body preview below each title."
+      );
+      return;
+    }
+    if (
+      !window.confirm(
+        `Delete ${list.length} selected note(s)? This cannot be undone.`
+      )
+    ) {
+      return;
+    }
+    try {
+      for (const en of list) {
+        await apiSend(`/api/notes/${en.id}`, "DELETE", undefined, googleToken);
+      }
+      if (list.some((en) => en.id === activeNote?.id)) setActiveNote(null);
+      const deleted = new Set(list.map((en) => en.id));
+      setAiSimilar((prev) =>
+        prev
+          ? {
+              ...prev,
+              emptyNotes: prev.emptyNotes.filter((en) => !deleted.has(en.id)),
+            }
+          : null
+      );
+      setEmptyNotesDeleteSelected((prev) => {
+        const next = { ...prev };
+        for (const id of deleted) delete next[id];
+        return next;
+      });
+      await loadNotes();
+      onNotebooksChanged();
+    } catch (e) {
+      setErr(String(e));
+    }
+  }, [
+    aiSimilar,
+    emptyNotesDeleteSelected,
+    googleToken,
+    loadNotes,
+    onNotebooksChanged,
+    activeNote?.id,
+  ]);
 
   const runMergePreviewFromSimilar = useCallback(async () => {
     if (!aiSimilar) return;
@@ -760,6 +835,7 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
       setAiMerge(null);
       setAiSimilar(null);
       setSimilarSelected({});
+      setEmptyNotesDeleteSelected({});
       await loadNotes();
       onNotebooksChanged();
       setActiveNote(r.note);
@@ -826,6 +902,7 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
       if (aiSimilar) {
         setAiSimilar(null);
         setSimilarSelected({});
+        setEmptyNotesDeleteSelected({});
         setAiMerge(null);
         setAiToolbarOpen(false);
         return;
@@ -1572,27 +1649,143 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
       )}
 
       {aiSimilar && (
-        <div className="modal-backdrop" role="presentation" onClick={() => setAiSimilar(null)}>
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => {
+            setEmptyNotesDeleteSelected({});
+            setAiSimilar(null);
+          }}
+        >
           <div
             className="modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="ai-similar-title"
             onClick={(e) => e.stopPropagation()}
-            style={{ maxWidth: 520 }}
+            style={{ maxWidth: 620 }}
           >
             <h3 id="ai-similar-title" style={{ marginTop: 0 }}>
               Consolidate notes
             </h3>
             <p className="muted" style={{ marginBottom: "0.75rem" }}>
-              Similar notes to “{aiSimilar.sourceTitle}” ·{" "}
+              Notes similar to “{aiSimilar.sourceTitle}” ·{" "}
               {aiSimilar.scope === "notebook" ? "This notebook only" : "All your notebooks"}.
-              Choose a primary note and which others to merge into it, then preview the combined
-              body.
+              Suggestions use shared <strong>content</strong> (not just the title). Check the notes
+              you want to merge into one primary note, then preview.
             </p>
-            {aiSimilar.candidates.length === 0 ? (
-              <p className="muted">No similar notes found.</p>
-            ) : (
+
+            {aiSimilar.emptyNotes.length > 0 && (
+              <div style={{ marginBottom: "1.25rem" }}>
+                <h4
+                  style={{
+                    margin: "0 0 0.35rem",
+                    fontSize: "0.95rem",
+                    fontWeight: 600,
+                  }}
+                >
+                  Empty notes
+                </h4>
+                <p className="muted" style={{ fontSize: "0.88rem", marginBottom: "0.5rem" }}>
+                  Review the body preview for each note. Check only the ones you want to delete, then
+                  confirm.
+                </p>
+                <div
+                  style={{
+                    display: "flex",
+                    gap: "0.75rem",
+                    marginBottom: "0.5rem",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="link-button"
+                    style={{ fontSize: "0.85rem" }}
+                    onClick={() =>
+                      setEmptyNotesDeleteSelected((prev) => {
+                        const next = { ...prev };
+                        for (const en of aiSimilar.emptyNotes) next[en.id] = true;
+                        return next;
+                      })
+                    }
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    className="link-button"
+                    style={{ fontSize: "0.85rem" }}
+                    onClick={() =>
+                      setEmptyNotesDeleteSelected((prev) => {
+                        const next = { ...prev };
+                        for (const en of aiSimilar.emptyNotes) next[en.id] = false;
+                        return next;
+                      })
+                    }
+                  >
+                    Clear selection
+                  </button>
+                </div>
+                <ul
+                  className="consolidate-empty-list"
+                  style={{ listStyle: "none", padding: 0, margin: "0 0 0.75rem", maxHeight: "22rem", overflow: "auto" }}
+                >
+                  {aiSimilar.emptyNotes.map((en) => (
+                    <li
+                      key={en.id}
+                      style={{
+                        borderBottom: "1px solid var(--border, #e5e7eb)",
+                        padding: "0.5rem 0",
+                      }}
+                    >
+                      <label
+                        style={{
+                          display: "flex",
+                          gap: "0.5rem",
+                          alignItems: "flex-start",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={emptyNotesDeleteSelected[en.id] ?? false}
+                          onChange={(e) =>
+                            setEmptyNotesDeleteSelected((prev) => ({
+                              ...prev,
+                              [en.id]: e.target.checked,
+                            }))
+                          }
+                          aria-label={`Select ${en.title} for deletion`}
+                        />
+                        <span style={{ minWidth: 0, flex: 1 }}>
+                          <strong>{en.title}</strong>
+                          <div className="consolidate-empty-body-preview">
+                            {(en.bodyPreview ?? "").length > 0
+                              ? en.bodyPreview
+                              : "(No body text)"}
+                          </div>
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+                <button
+                  type="button"
+                  className="btn btn-ghost danger"
+                  disabled={
+                    aiSimilar.emptyNotes.filter(
+                      (en) => emptyNotesDeleteSelected[en.id]
+                    ).length === 0
+                  }
+                  onClick={() => void deleteEmptySuggestedNotes()}
+                >
+                  Delete selected…
+                </button>
+              </div>
+            )}
+
+            {aiSimilar.candidates.length > 0 ? (
               <>
                 <label className="muted" style={{ display: "block", marginBottom: "0.35rem" }}>
                   Primary note (kept after merge)
@@ -1614,6 +1807,10 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
                       </option>
                     ))}
                 </select>
+                <p className="muted" style={{ fontSize: "0.82rem", marginBottom: "0.5rem" }}>
+                  Higher scores mean more overlapping meaningful words in the note body. Only strong
+                  matches are pre-checked.
+                </p>
                 <ul className="ai-similar-list" style={{ listStyle: "none", padding: 0, margin: 0 }}>
                   {aiSimilar.candidates.map((c) => (
                     <li
@@ -1644,27 +1841,35 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
                     </li>
                   ))}
                 </ul>
-                <div className="modal-actions" style={{ marginTop: "1rem" }}>
-                  <button type="button" className="btn btn-ghost" onClick={() => setAiSimilar(null)}>
-                    Close
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={() => void runMergePreviewFromSimilar()}
-                  >
-                    Preview merge
-                  </button>
-                </div>
               </>
+            ) : (
+              <p className="muted" style={{ marginBottom: "1rem" }}>
+                No other notes look similar enough in <strong>content</strong> to suggest merging.
+                Try a note with more unique text, or narrow scope to one notebook.
+              </p>
             )}
-            {aiSimilar.candidates.length === 0 && (
-              <div className="modal-actions" style={{ marginTop: "1rem" }}>
-                <button type="button" className="btn btn-ghost" onClick={() => setAiSimilar(null)}>
-                  Close
+
+            <div className="modal-actions" style={{ marginTop: "1rem" }}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => {
+                  setEmptyNotesDeleteSelected({});
+                  setAiSimilar(null);
+                }}
+              >
+                Close
+              </button>
+              {aiSimilar.candidates.length > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => void runMergePreviewFromSimilar()}
+                >
+                  Preview merge
                 </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
       )}
