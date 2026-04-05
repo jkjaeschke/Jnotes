@@ -7,9 +7,9 @@ substitutions:
   # SPA origin(s) for CORS + cookies — must match where the web app is hosted (not the API URL).
   # Example: https://my-app.web.app  (omit or leave empty to avoid overwriting Cloud Run env).
   _FRONTEND_ORIGIN: ""
-  # Secret Manager *secret id* (not the value). Runtime loads the key via OPENAI_API_KEY_SECRET.
+  # Secret Manager *secret id* (not the value). Runtime loads the key via OPENAI_API_KEY_SECRET env.
   # Grant freenotes-api@PROJECT.iam.gserviceaccount.com secretAccessor on that secret.
-  _OPENAI_SECRET_ID: ""
+  _OPENAI_SECRET_ID: "OPENAI_API_KEY_SECRET"
 
 timeout: 1800s
 
