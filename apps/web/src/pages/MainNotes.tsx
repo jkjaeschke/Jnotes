@@ -55,6 +55,13 @@ type Notebook = {
   lastNoteActivityAt?: string | null;
 };
 
+/** Ungrouped notebooks may have stackId null, missing, or "" — align with API / Firestore. */
+function normalizedNotebookStackId(nb: { stackId?: string | null }): string | null {
+  const s = nb.stackId;
+  if (s == null || s === "") return null;
+  return s;
+}
+
 type Note = {
   id: string;
   notebookId: string;
@@ -101,6 +108,14 @@ function sortNotebooksForLibrary(a: Notebook, b: Notebook): number {
   return a.name.localeCompare(b.name);
 }
 
+/** Keep sidebar order in sync after saves (library is not refetched on every autosave). */
+function notebookWithMergedNoteActivity(nb: Notebook, note: Note): Notebook {
+  const noteMs = noteRecencyMs(note);
+  const prevMs = notebookRecencyMs(nb);
+  const maxMs = Math.max(prevMs, noteMs);
+  return { ...nb, lastNoteActivityAt: new Date(maxMs).toISOString() };
+}
+
 type Props = {
   user: User;
   googleToken: string | null;
@@ -145,8 +160,10 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem(NOTES_COLLAPSED_KEY) === "1";
   });
-  /** Mobile: 0 = library, 1 = note list, 2 = editor */
+  /** Mobile: 0 = stacks + notebooks, 1 = note list, 2 = editor */
   const [mobileStep, setMobileStep] = useState(0);
+  /** Which stack’s notebooks are listed (null = Ungrouped). */
+  const [libraryStackId, setLibraryStackId] = useState<string | null>(null);
   const [stacks, setStacks] = useState<Stack[]>([]);
   const [notebooks, setNotebooks] = useState<Notebook[]>([]);
   const [activeNb, setActiveNb] = useState<string | null>(null);
@@ -155,15 +172,22 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
   const [title, setTitle] = useState("");
   const titleRef = useRef(title);
   titleRef.current = title;
+  /** Avoid resetting the library stack column on every `notebooks` refetch while the same notebook stays active. */
+  const libraryStackSyncedForRef = useRef<{
+    activeNb: string;
+    stackId: string | null;
+  } | null>(null);
+  /** True after user picks a stack (or Ungrouped) in the sidebar — avoids re-selecting last notebook from another stack. */
+  const libraryFilterUserChosenRef = useRef(false);
   const [err, setErr] = useState<string | null>(null);
-  /** Stack ids that are collapsed (hidden). Default: none = all expanded. */
-  const [collapsedStacks, setCollapsedStacks] = useState<Set<string>>(() => new Set());
   /** Which note row has the ⋯ menu open (list). */
   const [noteMenuOpenId, setNoteMenuOpenId] = useState<string | null>(null);
   /** Editor toolbar ⋯ menu. */
   const [editorNoteMenuOpen, setEditorNoteMenuOpen] = useState(false);
   /** Notes panel: ⋯ menu for notebook (e.g. delete). */
   const [notebookPanelMenuOpen, setNotebookPanelMenuOpen] = useState(false);
+  /** Library sidebar: ⋯ menu for a notebook (stack / delete). */
+  const [notebookListMenuOpenId, setNotebookListMenuOpenId] = useState<string | null>(null);
   /** Move note modal: note being moved. */
   const [moveNote, setMoveNote] = useState<Note | null>(null);
   const [moveTargetNotebookId, setMoveTargetNotebookId] = useState<string>("");
@@ -226,8 +250,9 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
   );
   const activeNotebookName = activeNotebook?.name ?? "";
   const activeStackName = useMemo(() => {
-    if (!activeNotebook?.stackId) return null;
-    return stacks.find((s) => s.id === activeNotebook.stackId)?.name ?? null;
+    const sid = activeNotebook ? normalizedNotebookStackId(activeNotebook) : null;
+    if (!sid) return null;
+    return stacks.find((s) => s.id === sid)?.name ?? null;
   }, [stacks, activeNotebook]);
 
   const notesSorted = useMemo(() => sortNotesNewestFirst(notes), [notes]);
@@ -241,11 +266,12 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
     const by: Record<string, Notebook[]> = {};
     const un: Notebook[] = [];
     for (const n of notebooks) {
-      if (!n.stackId) {
+      const sid = normalizedNotebookStackId(n);
+      if (sid === null) {
         un.push(n);
       } else {
-        if (!by[n.stackId]) by[n.stackId] = [];
-        by[n.stackId].push(n);
+        if (!by[sid]) by[sid] = [];
+        by[sid].push(n);
       }
     }
     for (const k of Object.keys(by)) {
@@ -254,6 +280,17 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
     un.sort(sortNotebooksForLibrary);
     return { byStack: by, ungrouped: un };
   }, [notebooks]);
+
+  const notebooksForLibraryColumn = useMemo(
+    () =>
+      libraryStackId === null ? ungrouped : (byStack[libraryStackId] ?? []),
+    [libraryStackId, ungrouped, byStack]
+  );
+
+  const selectedStackLabel = useMemo(() => {
+    if (libraryStackId === null) return "Ungrouped";
+    return stacks.find((s) => s.id === libraryStackId)?.name ?? "Stack";
+  }, [libraryStackId, stacks]);
 
   const uploadAndInsertImages = useCallback(async (files: File[]) => {
     const noteId = activeNoteIdRef.current;
@@ -311,6 +348,14 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
     [notesImagePasteDropExt]
   );
 
+  const bumpNotebookFromSavedNote = useCallback((note: Note) => {
+    setNotebooks((prev) =>
+      prev.map((nb) =>
+        nb.id === note.notebookId ? notebookWithMergedNoteActivity(nb, note) : nb
+      )
+    );
+  }, []);
+
   const persist = useCallback(
     async (id: string, t: string, body: string) => {
       try {
@@ -322,11 +367,12 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
         );
         setNotes((prev) => prev.map((n) => (n.id === id ? r.note : n)));
         setActiveNote((n) => (n?.id === id ? r.note : n));
+        bumpNotebookFromSavedNote(r.note);
       } catch (e) {
         setErr(String(e));
       }
     },
-    [googleToken]
+    [googleToken, bumpNotebookFromSavedNote]
   );
 
   const editor = useEditor(
@@ -369,13 +415,25 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
       setActiveNb(fromUrl);
       return;
     }
+    if (!libraryFilterUserChosenRef.current) {
+      const storedNb = readLastNotebookId(userId);
+      if (storedNb && notebooks.some((n) => n.id === storedNb)) {
+        setActiveNb(storedNb);
+        return;
+      }
+      setActiveNb(notebooks[0]!.id);
+      return;
+    }
+    const visible = notebooksForLibraryColumn;
     const storedNb = readLastNotebookId(userId);
-    if (storedNb && notebooks.some((n) => n.id === storedNb)) {
+    if (storedNb && visible.some((n) => n.id === storedNb)) {
       setActiveNb(storedNb);
       return;
     }
-    setActiveNb(notebooks[0]!.id);
-  }, [notebooks, activeNb, searchParams, userId]);
+    if (visible[0]) {
+      setActiveNb(visible[0].id);
+    }
+  }, [notebooks, activeNb, searchParams, userId, notebooksForLibraryColumn]);
 
   useEffect(() => {
     window.localStorage.setItem(LIB_COLLAPSED_KEY, libraryCollapsed ? "1" : "0");
@@ -404,6 +462,39 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
     void loadLibrary().catch((e) => setErr(String(e)));
   }, [loadLibrary, refreshKey]);
 
+  useEffect(() => {
+    if (!activeNb) {
+      libraryStackSyncedForRef.current = null;
+      return;
+    }
+    const nb = notebooks.find((n) => n.id === activeNb);
+    if (!nb) return;
+    const sid = normalizedNotebookStackId(nb);
+    const prev = libraryStackSyncedForRef.current;
+    if (!prev || prev.activeNb !== activeNb) {
+      libraryStackSyncedForRef.current = { activeNb, stackId: sid };
+      setLibraryStackId(sid);
+      return;
+    }
+    if (prev.stackId !== sid) {
+      libraryStackSyncedForRef.current = { activeNb, stackId: sid };
+      setLibraryStackId(sid);
+    }
+  }, [activeNb, notebooks]);
+
+  useEffect(() => {
+    if (!activeNb) return;
+    const nb = notebooks.find((n) => n.id === activeNb);
+    if (!nb) return;
+    const sid = normalizedNotebookStackId(nb);
+    const inView =
+      libraryStackId === null ? sid === null : sid === libraryStackId;
+    if (!inView) {
+      setActiveNb(null);
+      setActiveNote(null);
+    }
+  }, [libraryStackId, activeNb, notebooks]);
+
   const loadNotes = useCallback(async () => {
     if (!activeNb) {
       setNotes([]);
@@ -424,6 +515,7 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
     setNoteMenuOpenId(null);
     setEditorNoteMenuOpen(false);
     setNotebookPanelMenuOpen(false);
+    setNotebookListMenuOpenId(null);
     setAiToolbarOpen(false);
   }, []);
 
@@ -432,7 +524,8 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
       noteMenuOpenId === null &&
       !editorNoteMenuOpen &&
       !notebookPanelMenuOpen &&
-      !aiToolbarOpen
+      !aiToolbarOpen &&
+      notebookListMenuOpenId === null
     ) {
       return;
     }
@@ -447,6 +540,7 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
     noteMenuOpenId,
     editorNoteMenuOpen,
     notebookPanelMenuOpen,
+    notebookListMenuOpenId,
     aiToolbarOpen,
     closeNoteMenus,
   ]);
@@ -497,15 +591,6 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
     setMobileStep((s) => Math.max(0, s - 1));
   }, []);
 
-  const toggleStackCollapsed = useCallback((stackId: string) => {
-    setCollapsedStacks((prev) => {
-      const next = new Set(prev);
-      if (next.has(stackId)) next.delete(stackId);
-      else next.add(stackId);
-      return next;
-    });
-  }, []);
-
   const newStack = useCallback(async () => {
     const name = window.prompt("Stack name (groups notebooks together)");
     if (!name?.trim()) return;
@@ -524,6 +609,7 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
         return;
       }
       await apiSend(`/api/stacks/${stackId}`, "DELETE", undefined, googleToken);
+      setLibraryStackId((prev) => (prev === stackId ? null : prev));
       onNotebooksChanged();
       void loadLibrary();
     },
@@ -556,6 +642,7 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
         return;
       }
       try {
+        setNotebookListMenuOpenId(null);
         await apiSend(`/api/notebooks/${nb.id}`, "DELETE", undefined, googleToken);
         if (activeNb === nb.id) {
           setActiveNote(null);
@@ -572,6 +659,30 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
     [activeNb, googleToken, loadLibrary, onNotebooksChanged, userId]
   );
 
+  const moveNotebookToStack = useCallback(
+    async (nb: Notebook, stackId: string | null) => {
+      const target = stackId ?? null;
+      if (normalizedNotebookStackId(nb) === target) {
+        setNotebookListMenuOpenId(null);
+        return;
+      }
+      setNotebookListMenuOpenId(null);
+      try {
+        await apiSend(
+          `/api/notebooks/${nb.id}`,
+          "PATCH",
+          { stackId },
+          googleToken
+        );
+        onNotebooksChanged();
+        await loadLibrary();
+      } catch (e) {
+        setErr(String(e));
+      }
+    },
+    [googleToken, loadLibrary, onNotebooksChanged]
+  );
+
   const newNote = useCallback(async () => {
     if (!activeNb) return;
     try {
@@ -583,11 +694,12 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
       );
       setNotes((prev) => sortNotesNewestFirst([r.note, ...prev]));
       setActiveNote(r.note);
+      bumpNotebookFromSavedNote(r.note);
       if (isMobile) setMobileStep(2);
     } catch (e) {
       setErr(String(e));
     }
-  }, [activeNb, googleToken, isMobile]);
+  }, [activeNb, googleToken, isMobile, bumpNotebookFromSavedNote]);
 
   const openNoteInNewWindow = useCallback((note: Note) => {
     closeNoteMenus();
@@ -656,11 +768,12 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
         await apiSend(`/api/notes/${note.id}`, "DELETE", undefined, googleToken);
         if (activeNote?.id === note.id) setActiveNote(null);
         await loadNotes();
+        onNotebooksChanged();
       } catch (e) {
         setErr(String(e));
       }
     },
-    [activeNote, closeNoteMenus, googleToken, loadNotes]
+    [activeNote, closeNoteMenus, googleToken, loadNotes, onNotebooksChanged]
   );
 
   const deleteNote = useCallback(async () => {
@@ -936,6 +1049,7 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
         className={`link${activeNb === nb.id ? " active" : ""}`}
         aria-current={activeNb === nb.id ? "true" : undefined}
         onClick={() => {
+          setLibraryStackId(normalizedNotebookStackId(nb));
           setActiveNb(nb.id);
           setActiveNote(null);
           if (isMobile) setMobileStep(1);
@@ -943,17 +1057,78 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
       >
         {nb.name}
       </button>
-      <button
-        type="button"
-        className="btn btn-ghost btn-tiny danger"
-        aria-label={`Delete notebook ${nb.name}`}
-        onClick={(e) => {
-          e.preventDefault();
-          void deleteNotebook(nb);
-        }}
-      >
-        Delete
-      </button>
+      <div className="note-menu-anchor nb-item-menu">
+        <button
+          type="button"
+          className="note-menu-trigger"
+          aria-label={`Notebook options: ${nb.name}`}
+          aria-haspopup="menu"
+          aria-expanded={notebookListMenuOpenId === nb.id}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setNotebookPanelMenuOpen(false);
+            setEditorNoteMenuOpen(false);
+            setNoteMenuOpenId(null);
+            setNotebookListMenuOpenId((prev) => (prev === nb.id ? null : nb.id));
+          }}
+        >
+          ⋯
+        </button>
+        {notebookListMenuOpenId === nb.id && (
+          <ul className="note-actions-menu" role="menu">
+            {stacksSorted.length === 0 ? (
+              <li role="none">
+                <span
+                  className="note-actions-menu-item"
+                  style={{ cursor: "default", opacity: 0.8 }}
+                >
+                  No stacks yet — use + New Stack above
+                </span>
+              </li>
+            ) : (
+              stacksSorted.map((st) =>
+                st.id !== normalizedNotebookStackId(nb) ? (
+                  <li key={st.id} role="none">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="note-actions-menu-item"
+                      onClick={() => void moveNotebookToStack(nb, st.id)}
+                    >
+                      {normalizedNotebookStackId(nb)
+                        ? `Move to ${st.name}`
+                        : `Add to ${st.name}`}
+                    </button>
+                  </li>
+                ) : null
+              )
+            )}
+            {normalizedNotebookStackId(nb) != null ? (
+              <li role="none">
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="note-actions-menu-item"
+                  onClick={() => void moveNotebookToStack(nb, null)}
+                >
+                  Move to Ungrouped
+                </button>
+              </li>
+            ) : null}
+            <li role="none" className="note-actions-menu-divider-before">
+              <button
+                type="button"
+                role="menuitem"
+                className="note-actions-menu-item danger"
+                onClick={() => void deleteNotebook(nb)}
+              >
+                Delete notebook…
+              </button>
+            </li>
+          </ul>
+        )}
+      </div>
     </li>
   );
 
@@ -968,7 +1143,7 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
 
   const mobileBarTitle =
     mobileStep === 0
-      ? "Library"
+      ? "Stacks & notebooks"
       : mobileStep === 1
         ? activeNotebookName || "Notes"
         : title.trim() || "Untitled";
@@ -989,125 +1164,171 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
           <span className="notes-mobile-bar-title">{mobileBarTitle}</span>
         </div>
       )}
-      <aside className="notebooks-panel" aria-label="Stacks and notebooks">
-        {!isMobile && (
-          <div className="panel-collapse-row">
-            {libraryCollapsed ? (
-              <button
-                type="button"
-                className="panel-collapse-toggle"
-                onClick={() => setLibraryCollapsed(false)}
-                aria-label="Expand library"
-                title="Expand library"
-              >
-                »
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="panel-collapse-toggle"
-                onClick={() => setLibraryCollapsed(true)}
-                aria-label="Collapse library"
-                title="Collapse library"
-              >
-                «
-              </button>
-            )}
-          </div>
-        )}
-        {!libraryCollapsed || isMobile ? (
-          <>
-        <div className="toolbar library-toolbar">
-          <button type="button" className="btn btn-primary btn-block" onClick={() => void newStack()}>
-            + New Stack
-          </button>
-          <button type="button" className="btn btn-ghost btn-block" onClick={() => void newNotebookInStack(null)}>
-            New notebook…
-          </button>
-        </div>
-
-        {stacks.length === 0 && notebooks.length === 0 ? (
-          <>
-            <p className="library-hint muted">
-              Create a stack (optional) and notebooks, then pick one to add notes.
-            </p>
-            <button type="button" className="library-add-notebook" onClick={() => void newNotebookInStack(null)}>
-              + Add notebook
-            </button>
-          </>
-        ) : (
-          <>
-            {stacksSorted.map((stack) => {
-              const nbs = byStack[stack.id] ?? [];
-              const collapsed = collapsedStacks.has(stack.id);
-              return (
-                <div key={stack.id} className="stack-block">
-                  <div className="stack-header">
+      <div className="library-split">
+        <aside className="stacks-panel" aria-label="Stacks">
+          {!isMobile && (
+            <div className="panel-collapse-row">
+              {libraryCollapsed ? (
+                <button
+                  type="button"
+                  className="panel-collapse-toggle"
+                  onClick={() => setLibraryCollapsed(false)}
+                  aria-label="Expand stacks and notebooks"
+                  title="Expand stacks and notebooks"
+                >
+                  »
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="panel-collapse-toggle"
+                  onClick={() => setLibraryCollapsed(true)}
+                  aria-label="Collapse stacks and notebooks"
+                  title="Collapse stacks and notebooks"
+                >
+                  «
+                </button>
+              )}
+            </div>
+          )}
+          {!libraryCollapsed || isMobile ? (
+            <>
+              <div className="stack-section-title">Stacks</div>
+              <div className="toolbar library-toolbar stacks-toolbar">
+                <button type="button" className="btn btn-primary btn-block" onClick={() => void newStack()}>
+                  + New Stack
+                </button>
+              </div>
+              {stacks.length === 0 && notebooks.length === 0 ? (
+                <p className="library-hint muted">
+                  Add a stack here (optional), then create notebooks in the next column.
+                </p>
+              ) : (
+                <ul className="stack-picker-list" role="list">
+                  <li className="stack-picker-item">
                     <button
                       type="button"
-                      className="stack-chevron"
-                      aria-expanded={!collapsed}
-                      aria-label={collapsed ? "Expand stack" : "Collapse stack"}
-                      onClick={() => toggleStackCollapsed(stack.id)}
+                      className={`stack-picker-select${libraryStackId === null ? " active" : ""}`}
+                      onClick={() => {
+                        libraryFilterUserChosenRef.current = true;
+                        setLibraryStackId(null);
+                      }}
                     >
-                      {collapsed ? "▸" : "▾"}
+                      <span className="stack-picker-name">Ungrouped</span>
                     </button>
-                    <span className="stack-title" title={stack.name}>
-                      {stack.name}
-                    </span>
-                    <div className="stack-actions">
-                      <button type="button" className="btn btn-ghost btn-tiny" onClick={() => void newNotebookInStack(stack.id)}>
-                        + Notebook
+                  </li>
+                  {stacksSorted.map((stack) => (
+                    <li key={stack.id} className="stack-picker-item">
+                      <button
+                        type="button"
+                        className={`stack-picker-select${
+                          libraryStackId === stack.id ? " active" : ""
+                        }`}
+                        onClick={() => {
+                          libraryFilterUserChosenRef.current = true;
+                          setLibraryStackId(stack.id);
+                        }}
+                      >
+                        <span className="stack-picker-name" title={stack.name}>
+                          {stack.name}
+                        </span>
                       </button>
                       <button
                         type="button"
-                        className="btn btn-ghost btn-tiny danger"
+                        className="btn btn-ghost btn-tiny danger stack-picker-remove"
+                        aria-label={`Remove stack ${stack.name}`}
                         onClick={() => void removeStack(stack.id)}
                       >
                         Remove
                       </button>
-                    </div>
-                  </div>
-                  {!collapsed && (
-                    <ul className="nb-list stack-nb-list" role="list">
-                      {nbs.length === 0 ? (
-                        <li className="muted empty-inline">No notebooks in this stack.</li>
-                      ) : (
-                        nbs.map((nb) => renderNotebookButton(nb))
-                      )}
-                    </ul>
-                  )}
-                </div>
-              );
-            })}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          ) : null}
+        </aside>
 
-            <div className="stack-block stack-block-ungrouped">
-              <div className="stack-header stack-header-static">
-                <span className="stack-title">Ungrouped notebooks</span>
-                <button type="button" className="btn btn-ghost btn-tiny" onClick={() => void newNotebookInStack(null)}>
+        <aside className="notebooks-panel" aria-label="Notebooks">
+          {!isMobile && (
+            <div className="panel-collapse-row">
+              {libraryCollapsed ? (
+                <button
+                  type="button"
+                  className="panel-collapse-toggle"
+                  onClick={() => setLibraryCollapsed(false)}
+                  aria-label="Expand stacks and notebooks"
+                  title="Expand stacks and notebooks"
+                >
+                  »
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="panel-collapse-toggle"
+                  onClick={() => setLibraryCollapsed(true)}
+                  aria-label="Collapse stacks and notebooks"
+                  title="Collapse stacks and notebooks"
+                >
+                  «
+                </button>
+              )}
+            </div>
+          )}
+          {!libraryCollapsed || isMobile ? (
+            <>
+              <div className="stack-section-title">Notebooks</div>
+              <div className="notebooks-column-context" title={selectedStackLabel}>
+                {selectedStackLabel}
+              </div>
+              <div className="toolbar library-toolbar">
+                <button
+                  type="button"
+                  className="btn btn-primary btn-block"
+                  onClick={() => void newNotebookInStack(libraryStackId)}
+                >
                   + Notebook
                 </button>
               </div>
-              <ul className="nb-list stack-nb-list" role="list">
-                {ungrouped.length === 0 ? (
-                  <li className="muted empty-inline">None — add one above.</li>
-                ) : (
-                  ungrouped.map((nb) => renderNotebookButton(nb))
-                )}
-              </ul>
-            </div>
-            <button
-              type="button"
-              className="library-add-notebook"
-              onClick={() => void newNotebookInStack(null)}
-            >
-              + Add notebook
-            </button>
-          </>
-        )}
-          </>
-        ) : null}
-      </aside>
+              {stacks.length === 0 && notebooks.length === 0 ? (
+                <>
+                  <p className="library-hint muted">
+                    Create a stack (optional) in the left column, then add your first notebook here.
+                  </p>
+                  <button
+                    type="button"
+                    className="library-add-notebook"
+                    onClick={() => void newNotebookInStack(null)}
+                  >
+                    + Add notebook
+                  </button>
+                </>
+              ) : (
+                <>
+                  <ul className="nb-list notebooks-column-list" role="list">
+                    {notebooksForLibraryColumn.length === 0 ? (
+                      <li className="muted empty-inline">
+                        {libraryStackId === null
+                          ? "No ungrouped notebooks. Use + Notebook or pick a stack."
+                          : "No notebooks in this stack yet. Use + Notebook."}
+                      </li>
+                    ) : (
+                      notebooksForLibraryColumn.map((nb) => renderNotebookButton(nb))
+                    )}
+                  </ul>
+                  <button
+                    type="button"
+                    className="library-add-notebook"
+                    onClick={() => void newNotebookInStack(libraryStackId)}
+                  >
+                    + Add notebook
+                  </button>
+                </>
+              )}
+            </>
+          ) : null}
+        </aside>
+      </div>
 
       <section className="notes-panel" aria-label="Notes in notebook">
         {!isMobile && (
@@ -1166,13 +1387,59 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
                     e.stopPropagation();
                     setEditorNoteMenuOpen(false);
                     setNoteMenuOpenId(null);
+                    setNotebookListMenuOpenId(null);
                     setNotebookPanelMenuOpen((v) => !v);
                   }}
                 >
                   ⋯
                 </button>
-                {notebookPanelMenuOpen && (
+                {notebookPanelMenuOpen && activeNotebook && (
                   <ul className="note-actions-menu" role="menu">
+                    {stacksSorted.length === 0 ? (
+                      <li role="none">
+                        <span
+                          className="note-actions-menu-item"
+                          style={{ cursor: "default", opacity: 0.8 }}
+                        >
+                          No stacks — use + New Stack in the library
+                        </span>
+                      </li>
+                    ) : (
+                      stacksSorted.map((st) =>
+                        st.id !== normalizedNotebookStackId(activeNotebook) ? (
+                          <li key={st.id} role="none">
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="note-actions-menu-item"
+                              onClick={() => {
+                                setNotebookPanelMenuOpen(false);
+                                void moveNotebookToStack(activeNotebook, st.id);
+                              }}
+                            >
+                              {normalizedNotebookStackId(activeNotebook)
+                                ? `Move to ${st.name}`
+                                : `Add to ${st.name}`}
+                            </button>
+                          </li>
+                        ) : null
+                      )
+                    )}
+                    {normalizedNotebookStackId(activeNotebook) != null ? (
+                      <li role="none">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="note-actions-menu-item"
+                          onClick={() => {
+                            setNotebookPanelMenuOpen(false);
+                            void moveNotebookToStack(activeNotebook, null);
+                          }}
+                        >
+                          Move to Ungrouped
+                        </button>
+                      </li>
+                    ) : null}
                     {aiTierActive && (
                       <li role="none">
                         <button
@@ -1185,7 +1452,7 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
                         </button>
                       </li>
                     )}
-                    <li role="none">
+                    <li role="none" className="note-actions-menu-divider-before">
                       <button
                         type="button"
                         role="menuitem"
@@ -1244,6 +1511,7 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
                           e.stopPropagation();
                           setNotebookPanelMenuOpen(false);
                           setEditorNoteMenuOpen(false);
+                          setNotebookListMenuOpenId(null);
                           setNoteMenuOpenId((prev) => (prev === n.id ? null : n.id));
                         }}
                       >
@@ -1369,6 +1637,7 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
                     }
                     setNotebookPanelMenuOpen(false);
                     setNoteMenuOpenId(null);
+                    setNotebookListMenuOpenId(null);
                     setEditorNoteMenuOpen(false);
                     setAiToolbarOpen((v) => !v);
                   }}
@@ -1418,6 +1687,7 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
                     e.preventDefault();
                     setNotebookPanelMenuOpen(false);
                     setNoteMenuOpenId(null);
+                    setNotebookListMenuOpenId(null);
                     setEditorNoteMenuOpen((v) => !v);
                   }}
                 >

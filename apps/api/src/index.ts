@@ -562,7 +562,12 @@ app.get("/api/imports/:id", authPre, async (request, reply) => {
     return reply.status(404).send({ error: "Not found" });
   }
   const { userId: _u, gcsStagingKey: _g, ...rest } = job;
-  return { job: rest };
+  let notebookName: string | null = null;
+  if (rest.notebookId) {
+    const nb = await store.getNotebook(request.user!.id, rest.notebookId);
+    notebookName = nb?.name ?? null;
+  }
+  return { job: { ...rest, notebookName } };
 });
 
 registerAiRoutes(app);

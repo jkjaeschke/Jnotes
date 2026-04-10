@@ -85,37 +85,51 @@ async function persistNote(
       const mapped = await uploadResources(userId, existing.id, parsed.resources);
       const body = replaceEnMediaWithAttachments(parsed.content, mapped);
       const bodyText = htmlToPlainText(body);
-      await store.updateNote(userId, existing.id, {
-        title,
-        body,
-        bodyText,
-        notebookId,
-        updatedAt: parsed.updated ?? undefined,
-      });
+      await store.updateNote(
+        userId,
+        existing.id,
+        {
+          title,
+          body,
+          bodyText,
+          notebookId,
+          updatedAt: parsed.updated ?? undefined,
+        },
+        { skipNotebookActivity: true }
+      );
       return;
     }
   }
 
-  const note = await store.createNote(userId, {
-    notebookId,
-    title,
-    body: "",
-    bodyText: "",
-    evernoteGuid: guid,
-    createdAt: parsed.created ?? undefined,
-    updatedAt: parsed.updated ?? undefined,
-  });
+  const note = await store.createNote(
+    userId,
+    {
+      notebookId,
+      title,
+      body: "",
+      bodyText: "",
+      evernoteGuid: guid,
+      createdAt: parsed.created ?? undefined,
+      updatedAt: parsed.updated ?? undefined,
+    },
+    { skipNotebookActivity: true }
+  );
 
   const mapped = await uploadResources(userId, note.id, parsed.resources);
   const body = replaceEnMediaWithAttachments(parsed.content, mapped);
   const bodyText = htmlToPlainText(body);
 
-  await store.updateNote(userId, note.id, {
-    body,
-    bodyText,
-    // Second write must keep Evernote times; otherwise updateNote() uses server time for all notes.
-    updatedAt: parsed.updated ?? parsed.created ?? undefined,
-  });
+  await store.updateNote(
+    userId,
+    note.id,
+    {
+      body,
+      bodyText,
+      // Second write must keep Evernote times; otherwise updateNote() uses server time for all notes.
+      updatedAt: parsed.updated ?? parsed.created ?? undefined,
+    },
+    { skipNotebookActivity: true }
+  );
 }
 
 export async function processImportJob(jobId: string): Promise<void> {
@@ -150,6 +164,17 @@ export async function processImportJob(jobId: string): Promise<void> {
 
   let created = 0;
   let skipped = 0;
+  let lastProgressWrite = 0;
+
+  async function flushJobProgress(force: boolean) {
+    const now = Date.now();
+    if (!force && now - lastProgressWrite < 1200) return;
+    lastProgressWrite = now;
+    await store.updateImportJob(jobId, {
+      notesCreated: created,
+      notesSkipped: skipped,
+    });
+  }
 
   try {
     const stream = createReadStreamSync(job.gcsStagingKey) as Readable;
@@ -161,14 +186,19 @@ export async function processImportJob(jobId: string): Promise<void> {
       } catch {
         skipped += 1;
       }
+      await flushJobProgress(false);
     });
 
+    await flushJobProgress(true);
+    await store.refreshNotebookLastNoteActivityFromNotes(job.userId, notebookId!);
     await store.updateImportJob(jobId, {
       status: "completed",
       notesCreated: created,
       notesSkipped: skipped,
     });
   } catch (e) {
+    await flushJobProgress(true);
+    await store.refreshNotebookLastNoteActivityFromNotes(job.userId, notebookId!);
     const msg = e instanceof Error ? e.message : String(e);
     await store.updateImportJob(jobId, {
       status: "failed",

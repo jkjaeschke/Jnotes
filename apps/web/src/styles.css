@@ -345,30 +345,38 @@ button.sidebar-nav-link {
   font-weight: 500;
 }
 
-/* Main notes area: Notebook → Notes → Editor (three columns) */
+/* Main notes area: Stacks | Notebooks | Notes | Editor */
 .notes-layout {
   display: grid;
-  grid-template-columns: minmax(220px, 260px) minmax(240px, 300px) minmax(0, 1fr);
+  grid-template-columns:
+    minmax(128px, 188px) minmax(188px, 268px) minmax(220px, 300px) minmax(0, 1fr);
   min-height: 100dvh;
   overflow: hidden;
   background: var(--bg);
 }
 
 .notes-layout.library-collapsed {
-  grid-template-columns: 44px minmax(240px, 300px) minmax(0, 1fr);
+  grid-template-columns: 44px 44px minmax(220px, 300px) minmax(0, 1fr);
 }
 
 .notes-layout.notes-collapsed {
-  grid-template-columns: minmax(220px, 260px) 44px minmax(0, 1fr);
+  grid-template-columns:
+    minmax(128px, 188px) minmax(188px, 268px) 44px minmax(0, 1fr);
 }
 
 .notes-layout.library-collapsed.notes-collapsed {
-  grid-template-columns: 44px 44px minmax(0, 1fr);
+  grid-template-columns: 44px 44px 44px minmax(0, 1fr);
 }
 
+.notes-layout.library-collapsed .stacks-panel .panel-collapse-row,
 .notes-layout.library-collapsed .notebooks-panel .panel-collapse-row,
 .notes-layout.notes-collapsed .notes-panel .panel-collapse-row {
   justify-content: center;
+}
+
+/* Desktop: stacks + notebooks are direct grid columns; wrapper is layout-transparent. */
+.library-split {
+  display: contents;
 }
 
 .panel-collapse-row {
@@ -450,7 +458,7 @@ button.sidebar-nav-link {
     white-space: nowrap;
   }
 
-  .notebooks-panel,
+  .library-split,
   .notes-panel,
   .editor-panel {
     grid-column: 1;
@@ -460,17 +468,40 @@ button.sidebar-nav-link {
     max-height: none !important;
   }
 
+  .library-split {
+    display: flex;
+    flex-direction: column;
+    overflow: auto;
+    gap: 0;
+    background: var(--surface);
+  }
+
+  .library-split .stacks-panel,
+  .library-split .notebooks-panel {
+    flex: 1 1 auto;
+    min-height: 0;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    max-height: 42vh;
+  }
+
+  .library-split .notebooks-panel {
+    border-bottom: none;
+    flex: 1 1 58%;
+    max-height: none;
+  }
+
   .notes-layout.mobile-step-0 .notes-panel,
   .notes-layout.mobile-step-0 .editor-panel {
     display: none !important;
   }
 
-  .notes-layout.mobile-step-1 .notebooks-panel,
+  .notes-layout.mobile-step-1 .library-split,
   .notes-layout.mobile-step-1 .editor-panel {
     display: none !important;
   }
 
-  .notes-layout.mobile-step-2 .notebooks-panel,
+  .notes-layout.mobile-step-2 .library-split,
   .notes-layout.mobile-step-2 .notes-panel {
     display: none !important;
   }
@@ -520,10 +551,83 @@ button.sidebar-nav-link {
   margin-top: 0.75rem;
 }
 
-.stack-header {
+.stacks-toolbar {
+  margin-bottom: 0.1rem;
+}
+
+.stack-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.stack-picker-item {
   display: flex;
   align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.stack-picker-select {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  text-align: left;
+  padding: 0.4rem 0.45rem;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.875rem;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.stack-picker-select:hover {
+  background: var(--surface-hover);
+}
+
+.stack-picker-select.active {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: var(--accent, #3b82f6);
+  font-weight: 600;
+}
+
+.stack-picker-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stack-picker-remove {
+  flex-shrink: 0;
+}
+
+.notebooks-column-context {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: -0.15rem 0 0.15rem;
+  padding: 0 0.15rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notebooks-column-list {
+  padding-left: 0 !important;
+}
+
+.stack-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 0.35rem;
+  row-gap: 0.4rem;
   padding: 0.5rem 0.5rem;
   background: var(--surface-subtle);
   border-bottom: 1px solid var(--border);
@@ -556,9 +660,11 @@ button.sidebar-nav-link {
 
 .stack-actions {
   display: flex;
+  flex-basis: 100%;
   flex-shrink: 0;
   gap: 0.15rem;
   align-items: center;
+  justify-content: flex-end;
 }
 
 .btn-tiny {
@@ -582,8 +688,8 @@ button.sidebar-nav-link {
   font-size: 0.85rem;
 }
 
-.notebooks-panel,
-.notes-panel {
+.stacks-panel,
+.notebooks-panel {
   border-right: 1px solid var(--border);
   background: var(--surface);
   overflow: auto;
@@ -595,7 +701,14 @@ button.sidebar-nav-link {
 }
 
 .notes-panel {
+  border-right: 1px solid var(--border);
   background: var(--bg);
+  overflow: auto;
+  padding: 1rem 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-height: 0;
   position: relative;
 }
 
@@ -856,6 +969,16 @@ button.sidebar-nav-link {
 
 .note-actions-menu-item.danger {
   color: var(--danger);
+}
+
+.note-actions-menu .note-actions-menu-divider-before {
+  border-top: 1px solid var(--border);
+  margin-top: 0.2rem;
+  padding-top: 0.2rem;
+}
+
+.nb-item .note-menu-anchor.nb-item-menu {
+  flex-shrink: 0;
 }
 
 .editor-toolbar {
@@ -1335,9 +1458,6 @@ ul.notes-list {
   font-weight: 600;
 }
 
-.nb-item > .btn-tiny {
-  flex-shrink: 0;
-}
 
 /* Fills the editor column; scrolls inside the frame when content is long. */
 .editor-body-tiptap .ProseMirror {
@@ -1462,4 +1582,47 @@ ul.notes-list {
   font-family: ui-monospace, monospace;
   font-size: 0.85rem;
   white-space: pre-wrap;
+}
+
+.import-loading {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-top: 1.25rem;
+  padding: 1rem 1.1rem;
+  border-radius: 10px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  background: var(--surface);
+}
+
+.import-spinner {
+  flex-shrink: 0;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin-top: 0.15rem;
+  border: 2px solid var(--muted);
+  border-top-color: var(--accent, #3b82f6);
+  border-radius: 50%;
+  animation: import-spin 0.75s linear infinite;
+}
+
+@keyframes import-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.import-loading-body {
+  min-width: 0;
+}
+
+.import-loading-title {
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.import-loading-detail {
+  margin: 0;
+  color: var(--muted);
 }

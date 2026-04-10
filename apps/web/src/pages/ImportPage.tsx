@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiGet, apiSend, apiUpload } from "../api.js";
 
@@ -8,6 +8,8 @@ type Job = {
   id: string;
   status: string;
   notebookId: string | null;
+  /** Present on GET /api/imports/:id; omitted on create/upload responses. */
+  notebookName?: string | null;
   fileName: string | null;
   notesCreated: number;
   notesSkipped: number;
@@ -33,10 +35,12 @@ type PresignResponse =
 
 export function ImportPage({ googleToken, onDone }: Props) {
   const navigate = useNavigate();
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [notebooks, setNotebooks] = useState<Notebook[]>([]);
   const [notebookId, setNotebookId] = useState<string>("");
   const [status, setStatus] = useState<string>("");
   const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     void apiGet<{ notebooks: Notebook[] }>("/api/notebooks", googleToken).then((r) =>
@@ -50,8 +54,22 @@ export function ImportPage({ googleToken, onDone }: Props) {
         for (let i = 0; i < 120; i++) {
           const r = await apiGet<{ job: Job }>(`/api/imports/${id}`, googleToken);
           const j = r.job;
-          setStatus(`${j.status} — created ${j.notesCreated}, skipped ${j.notesSkipped}`);
+          const nbLabel =
+            j.notebookName?.trim() ||
+            (j.fileName ? j.fileName.replace(/\.enex$/i, "").trim() : null) ||
+            "your notebook";
+          if (j.status === "processing" || j.status === "pending") {
+            const n = j.notesCreated + j.notesSkipped;
+            setStatus(
+              n > 0
+                ? `Importing into “${nbLabel}”… ${j.notesCreated} saved${j.notesSkipped ? `, ${j.notesSkipped} skipped` : ""}`
+                : `Preparing “${nbLabel}” and reading notes…`
+            );
+          } else {
+            setStatus(`${j.status} — ${j.notesCreated} saved, ${j.notesSkipped} skipped`);
+          }
           if (j.status === "completed" || j.status === "failed") {
+            setBusy(false);
             if (j.error) setErr(j.error);
             onDone();
             if (j.status === "completed" && j.notebookId) {
@@ -61,8 +79,10 @@ export function ImportPage({ googleToken, onDone }: Props) {
           }
           await new Promise((r) => setTimeout(r, 1500));
         }
+        setBusy(false);
         setErr("Import still running; refresh jobs from server.");
       } catch (e) {
+        setBusy(false);
         setErr(String(e));
       }
     },
@@ -73,6 +93,7 @@ export function ImportPage({ googleToken, onDone }: Props) {
     async (f: File | null) => {
       if (!f) return;
       setErr(null);
+      setBusy(true);
       setStatus("Preparing upload…");
       try {
         const presign = await apiSend<PresignResponse>(
@@ -132,11 +153,13 @@ export function ImportPage({ googleToken, onDone }: Props) {
           jobId = r.job.id;
         }
 
-        setStatus(`Job ${jobId} queued`);
+        setStatus("Starting import…");
         void pollJob(jobId);
       } catch (e) {
+        setBusy(false);
         setErr(String(e));
         setStatus("");
+        if (fileInputRef.current) fileInputRef.current.value = "";
       }
     },
     [googleToken, notebookId, pollJob]
@@ -155,6 +178,7 @@ export function ImportPage({ googleToken, onDone }: Props) {
         className="input"
         value={notebookId}
         onChange={(e) => setNotebookId(e.target.value)}
+        disabled={busy}
         style={{ marginBottom: "1rem" }}
       >
         <option value="">— Auto-create from file —</option>
@@ -166,12 +190,24 @@ export function ImportPage({ googleToken, onDone }: Props) {
       </select>
       <div>
         <input
+          ref={fileInputRef}
           type="file"
           accept=".enex,application/xml,text/xml"
+          disabled={busy}
+          aria-busy={busy}
           onChange={(e) => void onFile(e.target.files?.[0] ?? null)}
         />
       </div>
-      {status && <p className="import-status">{status}</p>}
+      {busy && (
+        <div className="import-loading" role="status" aria-live="polite">
+          <span className="import-spinner" aria-hidden />
+          <div className="import-loading-body">
+            <p className="import-loading-title">Working on your import</p>
+            {status ? <p className="import-status import-loading-detail">{status}</p> : null}
+          </div>
+        </div>
+      )}
+      {!busy && status ? <p className="import-status">{status}</p> : null}
       {err && (
         <p style={{ color: "var(--danger)" }} role="alert">
           {err}

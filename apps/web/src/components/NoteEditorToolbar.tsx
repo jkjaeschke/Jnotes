@@ -1,6 +1,6 @@
 import type { Editor } from "@tiptap/core";
 import { useEditorState } from "@tiptap/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 
 type TextStyleAttrs = {
   fontFamily?: string | null;
@@ -8,8 +8,58 @@ type TextStyleAttrs = {
   color?: string | null;
 };
 
-function mergeTextStyle(editor: Editor, patch: Partial<TextStyleAttrs>) {
-  const prev = editor.getAttributes("textStyle") as TextStyleAttrs;
+type ToolbarSelectionSnap = { from: number; to: number };
+
+/** Remember non-empty selection when the user mousedowns on a toolbar control (before focus leaves the editor). */
+function captureToolbarSelectionSnap(
+  editor: Editor,
+  snapRef: MutableRefObject<ToolbarSelectionSnap | null>
+) {
+  const { from, to } = editor.state.selection;
+  snapRef.current = from !== to ? { from, to } : null;
+}
+
+/** If the editor selection was collapsed by focusing the toolbar, restore the snap before running a command. */
+function consumeToolbarSelectionSnap(
+  editor: Editor,
+  snapRef: MutableRefObject<ToolbarSelectionSnap | null>
+) {
+  const snap = snapRef.current;
+  snapRef.current = null;
+  if (!snap || snap.from >= snap.to) return;
+  if (!editor.state.selection.empty) return;
+  const docSize = editor.state.doc.content.size;
+  const from = Math.max(0, Math.min(snap.from, docSize));
+  const to = Math.max(0, Math.min(snap.to, docSize));
+  if (from >= to) return;
+  editor.chain().focus().setTextSelection({ from, to }).run();
+}
+
+/** textStyle attrs at a document position (caret is collapsed after toolbar focus — getAttributes is wrong for merge). */
+function textStyleAttrsAtPos(editor: Editor, pos: number): TextStyleAttrs {
+  const doc = editor.state.doc;
+  const size = doc.content.size;
+  const p = Math.max(0, Math.min(pos, size));
+  const $pos = doc.resolve(p);
+  const marks = editor.state.storedMarks ?? $pos.marks();
+  const ts = marks.find((m) => m.type.name === "textStyle");
+  return (ts?.attrs ?? {}) as TextStyleAttrs;
+}
+
+function mergeTextStyle(
+  editor: Editor,
+  snapRef: MutableRefObject<ToolbarSelectionSnap | null>,
+  patch: Partial<TextStyleAttrs>
+) {
+  const snap = snapRef.current;
+  snapRef.current = null;
+
+  const sel = editor.state.selection;
+  const prev: TextStyleAttrs =
+    snap && sel.empty
+      ? textStyleAttrsAtPos(editor, snap.from)
+      : (editor.getAttributes("textStyle") as TextStyleAttrs);
+
   const next: Record<string, string | null> = { ...prev };
   for (const [k, v] of Object.entries(patch)) {
     if (v === null || v === undefined || v === "") {
@@ -23,10 +73,34 @@ function mergeTextStyle(editor: Editor, patch: Partial<TextStyleAttrs>) {
     return val != null && val !== "";
   });
   if (!hasAttrs) {
+    if (snap && sel.empty && snap.from < snap.to) {
+      const docSize = editor.state.doc.content.size;
+      const from = Math.max(0, Math.min(snap.from, docSize));
+      const to = Math.max(0, Math.min(snap.to, docSize));
+      if (from < to) {
+        editor.chain().focus().setTextSelection({ from, to }).unsetMark("textStyle").run();
+        return;
+      }
+    }
     editor.chain().focus().unsetMark("textStyle").run();
     return;
   }
-  editor.chain().focus().setMark("textStyle", next).removeEmptyTextStyle().run();
+
+  let chain = editor.chain().focus();
+  if (snap && sel.empty && snap.from < snap.to) {
+    const docSize = editor.state.doc.content.size;
+    const from = Math.max(0, Math.min(snap.from, docSize));
+    const to = Math.max(0, Math.min(snap.to, docSize));
+    if (from < to) {
+      chain = chain.setTextSelection({ from, to });
+    }
+  }
+  const attrsForMark: Record<string, string> = {};
+  for (const [k, v] of Object.entries(next)) {
+    if (v != null && v !== "") attrsForMark[k] = v;
+  }
+  // Do not chain removeEmptyTextStyle here — it can strip the mark in the same transaction as setMark.
+  chain.setMark("textStyle", attrsForMark).run();
 }
 
 function blockValue(editor: Editor | null): string {
@@ -102,6 +176,7 @@ export function NoteEditorToolbar({ editor }: Props) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [highlightOpen, setHighlightOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement | null>(null);
+  const toolbarSelectionSnapRef = useRef<ToolbarSelectionSnap | null>(null);
 
   const state = useEditorState({
     editor,
@@ -161,9 +236,21 @@ export function NoteEditorToolbar({ editor }: Props) {
     return () => document.removeEventListener("mousedown", onDoc);
   }, [moreOpen, highlightOpen]);
 
+  /** Drop toolbar snap when clicking in the note body so a cancelled dropdown cannot revive an old range. */
+  useEffect(() => {
+    const root = editor?.view?.dom;
+    if (!root) return;
+    const onCap = (e: MouseEvent) => {
+      if (root.contains(e.target as Node)) toolbarSelectionSnapRef.current = null;
+    };
+    document.addEventListener("mousedown", onCap, true);
+    return () => document.removeEventListener("mousedown", onCap, true);
+  }, [editor]);
+
   const setBlock = useCallback(
     (value: string) => {
       if (!editor) return;
+      consumeToolbarSelectionSnap(editor, toolbarSelectionSnapRef);
       const chain = editor.chain().focus();
       if (value === "paragraph") chain.setParagraph().run();
       else if (value === "h1") chain.setHeading({ level: 1 }).run();
@@ -172,6 +259,10 @@ export function NoteEditorToolbar({ editor }: Props) {
     },
     [editor]
   );
+
+  const captureToolbarSnap = useCallback(() => {
+    if (editor) captureToolbarSelectionSnap(editor, toolbarSelectionSnapRef);
+  }, [editor]);
 
   const setLink = useCallback(() => {
     if (!editor) return;
@@ -246,6 +337,7 @@ export function NoteEditorToolbar({ editor }: Props) {
           id="note-block-style"
           className="input editor-toolbar-select"
           value={state.block}
+          onMouseDown={captureToolbarSnap}
           onChange={(e) => setBlock(e.target.value)}
         >
           <option value="paragraph">Normal</option>
@@ -263,9 +355,10 @@ export function NoteEditorToolbar({ editor }: Props) {
           id="note-font-family"
           className="input editor-toolbar-select editor-toolbar-select-font"
           value={fontSelectValue}
+          onMouseDown={captureToolbarSnap}
           onChange={(e) => {
             const v = e.target.value;
-            mergeTextStyle(editor, { fontFamily: v || null });
+            mergeTextStyle(editor, toolbarSelectionSnapRef, { fontFamily: v || null });
           }}
         >
           {FONT_OPTIONS.map((o) => (
@@ -284,9 +377,10 @@ export function NoteEditorToolbar({ editor }: Props) {
           id="note-font-size"
           className="input editor-toolbar-select editor-toolbar-select-narrow"
           value={sizeSelectValue}
+          onMouseDown={captureToolbarSnap}
           onChange={(e) => {
             const v = e.target.value;
-            mergeTextStyle(editor, { fontSize: v || null });
+            mergeTextStyle(editor, toolbarSelectionSnapRef, { fontSize: v || null });
           }}
         >
           {SIZE_OPTIONS.map((o) => (
@@ -306,7 +400,10 @@ export function NoteEditorToolbar({ editor }: Props) {
           type="color"
           className="editor-color-swatch"
           value={/^#[0-9a-fA-F]{6}$/.test(state.color) ? state.color : "#111827"}
-          onChange={(e) => mergeTextStyle(editor, { color: e.target.value })}
+          onMouseDown={captureToolbarSnap}
+          onChange={(e) =>
+            mergeTextStyle(editor, toolbarSelectionSnapRef, { color: e.target.value })
+          }
           aria-label="Text color"
         />
       </div>

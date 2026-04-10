@@ -43,6 +43,30 @@ function noteRecencyMs(iso: string): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** Raise notebook.lastNoteActivityAt to at least candidateMs (max note recency in that notebook). */
+async function touchNotebookLastNoteActivity(
+  userId: string,
+  notebookId: string,
+  candidateMs: number
+): Promise<void> {
+  if (candidateMs <= 0) return;
+  const ref = db.collection("notebooks").doc(notebookId);
+  try {
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists || snap.data()!.userId !== userId) return;
+      const cur = snap.data()!.lastNoteActivityAt as Timestamp | undefined;
+      const curMs = cur?.toMillis?.() ?? 0;
+      if (candidateMs <= curMs) return;
+      tx.update(ref, {
+        lastNoteActivityAt: Timestamp.fromMillis(candidateMs),
+      });
+    });
+  } catch {
+    // Ordering hint only; note create/update already succeeded.
+  }
+}
+
 export async function upsertUserByEmail(
   email: string
 ): Promise<{ id: string; email: string }> {
@@ -249,18 +273,29 @@ export async function commitNoteMerge(
     }
   }
 
+  const mergedNotebookId = primarySnap.data()!.notebookId as string;
+  await refreshNotebookLastNoteActivityFromNotes(userId, mergedNotebookId);
+
   return { ok: true };
 }
 
 function notebookFromDoc(doc: DocumentSnapshot | QueryDocumentSnapshot) {
   const d = doc.data()!;
+  const lat = d.lastNoteActivityAt as Timestamp | undefined;
+  const rawSid = d.stackId as string | undefined | null;
+  const stackId =
+    rawSid == null || (typeof rawSid === "string" && rawSid.trim() === "")
+      ? null
+      : rawSid;
   return {
     id: doc.id,
     name: d.name as string,
     sortOrder: (d.sortOrder as number | undefined) ?? 0,
-    stackId: (d.stackId as string | undefined) ?? null,
+    stackId,
     createdAt: tsToIso(d.createdAt as Timestamp),
     updatedAt: tsToIso(d.updatedAt as Timestamp),
+    lastNoteActivityAt:
+      lat != null && typeof lat.toMillis === "function" ? tsToIso(lat) : null,
   };
 }
 
@@ -394,6 +429,34 @@ function noteDocMaxRecencyMs(doc: QueryDocumentSnapshot): number {
   return Math.max(noteRecencyMs(createdAt), noteRecencyMs(updatedAt));
 }
 
+/** Recompute from all notes in the notebook (delete, import batch, merge). */
+export async function refreshNotebookLastNoteActivityFromNotes(
+  userId: string,
+  notebookId: string
+): Promise<void> {
+  const ref = db.collection("notebooks").doc(notebookId);
+  const ns = await ref.get();
+  if (!ns.exists || ns.data()!.userId !== userId) return;
+
+  const snap = await db
+    .collection("notes")
+    .where("userId", "==", userId)
+    .where("notebookId", "==", notebookId)
+    .get();
+  let maxMs = 0;
+  for (const doc of snap.docs) {
+    maxMs = Math.max(maxMs, noteDocMaxRecencyMs(doc));
+  }
+
+  if (maxMs === 0) {
+    await ref.update({ lastNoteActivityAt: FieldValue.delete() });
+  } else {
+    await ref.update({
+      lastNoteActivityAt: Timestamp.fromMillis(maxMs),
+    });
+  }
+}
+
 /**
  * List notebooks ordered by most recent note activity (max of note created/updated times per
  * notebook), then notebook metadata for empty notebooks, with sortOrder/name as tie-breakers.
@@ -406,7 +469,7 @@ export async function listNotebooks(userId: string) {
   const list = snap.docs.map((doc) => notebookFromDoc(doc));
   const notebookIds = new Set(list.map((n) => n.id));
 
-  /** First hit in global updatedAt-desc order = latest note in that notebook. */
+  /** Max of each note's recency (latest of created/updated) per notebook; requires a full scan. */
   const lastNoteActivityMs = new Map<string, number>();
   let lastDoc: QueryDocumentSnapshot | undefined;
   const pageSize = 400;
@@ -424,10 +487,12 @@ export async function listNotebooks(userId: string) {
       for (const doc of nq.docs) {
         const nbId = doc.data().notebookId as string;
         if (!notebookIds.has(nbId)) continue;
-        if (lastNoteActivityMs.has(nbId)) continue;
-        lastNoteActivityMs.set(nbId, noteDocMaxRecencyMs(doc));
+        const ms = noteDocMaxRecencyMs(doc);
+        const prev = lastNoteActivityMs.get(nbId);
+        if (prev === undefined || ms > prev) {
+          lastNoteActivityMs.set(nbId, ms);
+        }
       }
-      if (lastNoteActivityMs.size >= notebookIds.size) break;
       if (nq.size < pageSize) break;
       lastDoc = nq.docs[nq.docs.length - 1]!;
     }
@@ -436,30 +501,43 @@ export async function listNotebooks(userId: string) {
     console.error("listNotebooks: activity scan failed", e);
   }
 
-  function notebookActivityMs(nb: (typeof list)[0]): number {
-    const fromNote = lastNoteActivityMs.get(nb.id);
-    if (fromNote !== undefined) return fromNote;
-    return Math.max(noteRecencyMs(nb.updatedAt), noteRecencyMs(nb.createdAt));
+  function effectiveNotebookActivityMs(nb: (typeof list)[0]): number {
+    let ms = Math.max(noteRecencyMs(nb.updatedAt), noteRecencyMs(nb.createdAt));
+    if (nb.lastNoteActivityAt) {
+      ms = Math.max(ms, noteRecencyMs(nb.lastNoteActivityAt));
+    }
+    const fromScan = lastNoteActivityMs.get(nb.id);
+    if (fromScan !== undefined) ms = Math.max(ms, fromScan);
+    return ms;
   }
 
-  const enriched = list.map((nb) => {
-    const ms = lastNoteActivityMs.get(nb.id);
-    return {
-      ...nb,
-      lastNoteActivityAt:
-        ms !== undefined ? new Date(ms).toISOString() : null,
-    };
+  const withActivity = list.map((nb) => ({
+    nb,
+    ms: effectiveNotebookActivityMs(nb),
+  }));
+
+  withActivity.sort((a, b) => {
+    if (b.ms !== a.ms) return b.ms - a.ms;
+    if (a.nb.sortOrder !== b.nb.sortOrder) return a.nb.sortOrder - b.nb.sortOrder;
+    return a.nb.name.localeCompare(b.nb.name);
   });
 
-  enriched.sort((a, b) => {
-    const ta = notebookActivityMs(a);
-    const tb = notebookActivityMs(b);
-    if (tb !== ta) return tb - ta;
-    if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
-    return a.name.localeCompare(b.name);
-  });
+  for (const { nb, ms } of withActivity) {
+    if (ms > 0 && nb.lastNoteActivityAt == null) {
+      void db
+        .collection("notebooks")
+        .doc(nb.id)
+        .update({
+          lastNoteActivityAt: Timestamp.fromMillis(ms),
+        })
+        .catch(() => {});
+    }
+  }
 
-  return enriched;
+  return withActivity.map(({ nb, ms }) => ({
+    ...nb,
+    lastNoteActivityAt: ms > 0 ? new Date(ms).toISOString() : null,
+  }));
 }
 
 export async function nextNotebookSortOrder(
@@ -632,7 +710,8 @@ export async function createNote(
     evernoteGuid?: string | null;
     createdAt?: Date;
     updatedAt?: Date;
-  }
+  },
+  opts?: { skipNotebookActivity?: boolean }
 ) {
   const ref = db.collection("notes").doc();
   const now = Timestamp.now();
@@ -649,6 +728,10 @@ export async function createNote(
   };
   if (data.evernoteGuid) payload.evernoteGuid = data.evernoteGuid;
   await ref.set(payload);
+  if (!opts?.skipNotebookActivity) {
+    const ms = Math.max(createdAt.toMillis(), updatedAt.toMillis());
+    await touchNotebookLastNoteActivity(userId, data.notebookId, ms);
+  }
   return {
     id: ref.id,
     notebookId: data.notebookId,
@@ -678,12 +761,14 @@ export async function updateNote(
     body?: string;
     bodyText?: string;
     updatedAt?: Date;
-  }
+  },
+  opts?: { skipNotebookActivity?: boolean }
 ) {
   const ref = db.collection("notes").doc(id);
   const snap = await ref.get();
   if (!snap.exists) return null;
   if (snap.data()!.userId !== userId) return null;
+  const oldNotebookId = snap.data()!.notebookId as string;
   const upd: Record<string, unknown> = {
     updatedAt: patch.updatedAt
       ? Timestamp.fromDate(patch.updatedAt)
@@ -695,7 +780,17 @@ export async function updateNote(
   if (patch.bodyText !== undefined) upd.bodyText = patch.bodyText;
   await ref.update(upd);
   const after = await ref.get();
-  return noteDocToApi(after);
+  const api = noteDocToApi(after);
+
+  if (!opts?.skipNotebookActivity) {
+    const ms = Math.max(noteRecencyMs(api.createdAt), noteRecencyMs(api.updatedAt));
+    await touchNotebookLastNoteActivity(userId, api.notebookId, ms);
+    if (api.notebookId !== oldNotebookId) {
+      await refreshNotebookLastNoteActivityFromNotes(userId, oldNotebookId);
+    }
+  }
+
+  return api;
 }
 
 export async function deleteNote(
@@ -707,8 +802,10 @@ export async function deleteNote(
   const snap = await ref.get();
   if (!snap.exists) return false;
   if (snap.data()!.userId !== userId) return false;
+  const notebookId = snap.data()!.notebookId as string;
   await deleteAttachmentsForNote(userId, id, deleteBlob);
   await ref.delete();
+  await refreshNotebookLastNoteActivityFromNotes(userId, notebookId);
   return true;
 }
 
