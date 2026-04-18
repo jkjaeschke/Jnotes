@@ -1,8 +1,8 @@
 /**
  * Make model HTML render like TipTap output in static previews (modal columns).
  * - LLM often emits `<li data-type="taskItem">` without a checkbox `<label>` — sometimes inside a
- *   plain `<ul>` (not `data-type="taskList"`). Global `.ProseMirror li[data-type="taskItem"] {
- *   display:flex }` then separates list markers from text.
+ *   plain `<ul>` (not `data-type="taskList"`). Global task-item layout in the editor uses CSS grid
+ *   on `li`; orphan fake items still need attrs stripped.
  * - Strip bogus task-list attrs when no real TipTap task UI (`label` first in `li`).
  * - Remove empty / br-only `<p>` and `<div>` (LLM spacing junk).
  * - Merge leading inline nodes into the first `<p>` inside `<li>`.
@@ -44,7 +44,7 @@ function stripBogusTaskLists(root: HTMLElement) {
 
 /**
  * Orphan `li[data-type="taskItem"]` under a normal `<ul>` / `<ol>` (no typed task list) still
- * matches `.ProseMirror li[data-type="taskItem"] { display:flex }` and breaks bullets.
+ * matches task-item layout rules and breaks bullets.
  */
 function stripBogusTaskItemAttrs(root: HTMLElement) {
   for (const li of root.querySelectorAll("li[data-type='taskItem']")) {
@@ -82,6 +82,7 @@ function mergeLeadingNodesIntoFirstParagraphInListItems(
 ) {
   const items = root.querySelectorAll("ul > li, ol > li");
   for (const li of items) {
+    if (li.getAttribute("data-type") === "taskItem") continue;
     const children = Array.from(li.childNodes);
     const firstPIdx = children.findIndex(
       (n) =>

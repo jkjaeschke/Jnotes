@@ -20,6 +20,7 @@ import { useWorkspaceOutlet } from "../workspaceOutletContext.js";
 import { NoteEditorToolbar } from "../components/NoteEditorToolbar.js";
 import { TextDiffPanel } from "../components/TextDiffPanel.js";
 import { normalizeNoteHtmlForPreview } from "../normalizeNoteHtmlPreview.js";
+import { normalizeTaskListHtmlForEditor } from "../normalizeTaskListHtmlForEditor.js";
 import { apiGet, apiSend, apiUpload } from "../api.js";
 import {
   readLastNotebookId,
@@ -584,7 +585,10 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
   useEffect(() => {
     if (!activeNote || !editor) return;
     setTitle(activeNote.title);
-    editor.commands.setContent(activeNote.body || "<p></p>", false);
+    editor.commands.setContent(
+      normalizeTaskListHtmlForEditor(activeNote.body || "<p></p>"),
+      false
+    );
   }, [activeNote?.id, editor]);
 
   const goBackMobile = useCallback(() => {
@@ -952,7 +956,12 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
       await loadNotes();
       onNotebooksChanged();
       setActiveNote(r.note);
-      if (editor) editor.commands.setContent(r.note.body || "<p></p>", false);
+      if (editor) {
+        editor.commands.setContent(
+          normalizeTaskListHtmlForEditor(r.note.body || "<p></p>"),
+          false
+        );
+      }
       setTitle(r.note.title);
     } catch (e) {
       setErr(String(e));
@@ -1906,8 +1915,9 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
                 className="btn btn-primary"
                 onClick={() => {
                   if (!editor || !activeNote) return;
-                  editor.commands.setContent(aiCleanupReview.afterHtml, false);
-                  void persist(activeNote.id, titleRef.current, aiCleanupReview.afterHtml);
+                  const html = normalizeTaskListHtmlForEditor(aiCleanupReview.afterHtml);
+                  editor.commands.setContent(html, false);
+                  void persist(activeNote.id, titleRef.current, html);
                   setAiCleanupReview(null);
                 }}
               >
