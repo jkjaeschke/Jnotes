@@ -51,6 +51,18 @@ function mergeTextStyle(
   snapRef: MutableRefObject<ToolbarSelectionSnap | null>,
   patch: Partial<TextStyleAttrs>
 ) {
+  const snapBefore = snapRef.current;
+  // Color / other native inputs steal focus before `onChange`; PM often collapses the selection by then.
+  // Re-expand from the snap so `setMark` applies to the intended range, not only `storedMarks`.
+  if (snapBefore && editor.state.selection.empty) {
+    const docSize = editor.state.doc.content.size;
+    const from = Math.max(0, Math.min(snapBefore.from, docSize));
+    const to = Math.max(0, Math.min(snapBefore.to, docSize));
+    if (from < to) {
+      editor.chain().focus().setTextSelection({ from, to }).run();
+    }
+  }
+
   const snap = snapRef.current;
   snapRef.current = null;
 
@@ -400,6 +412,7 @@ export function NoteEditorToolbar({ editor }: Props) {
           type="color"
           className="editor-color-swatch"
           value={/^#[0-9a-fA-F]{6}$/.test(state.color) ? state.color : "#111827"}
+          onPointerDown={captureToolbarSnap}
           onMouseDown={captureToolbarSnap}
           onChange={(e) =>
             mergeTextStyle(editor, toolbarSelectionSnapRef, { color: e.target.value })
