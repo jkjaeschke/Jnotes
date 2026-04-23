@@ -23,6 +23,13 @@ import { normalizeNoteHtmlForPreview } from "../normalizeNoteHtmlPreview.js";
 import { normalizeTaskListHtmlForEditor } from "../normalizeTaskListHtmlForEditor.js";
 import { apiGet, apiSend, apiUpload } from "../api.js";
 import {
+  clearNoteBodyBackup,
+  isTrivialEmptyHtml,
+  readNoteBodyBackup,
+  writeNoteBodyBackup,
+  type NoteBodyBackup,
+} from "../noteBodyBackup.js";
+import {
   readLastNotebookId,
   readLastNoteId,
   writeLastNotebookId,
@@ -181,6 +188,7 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
   /** True after user picks a stack (or Ungrouped) in the sidebar — avoids re-selecting last notebook from another stack. */
   const libraryFilterUserChosenRef = useRef(false);
   const [err, setErr] = useState<string | null>(null);
+  const [localBodyBackupHint, setLocalBodyBackupHint] = useState<NoteBodyBackup | null>(null);
   /** Which note row has the ⋯ menu open (list). */
   const [noteMenuOpenId, setNoteMenuOpenId] = useState<string | null>(null);
   /** Editor toolbar ⋯ menu. */
@@ -226,6 +234,8 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
     accepted: Record<string, boolean>;
   } | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Last body successfully stored on the server (load or last PATCH) — for wipe detection. */
+  const lastServerBodyRef = useRef<string>("");
   const editorRef = useRef<Editor | null>(null);
   const googleTokenRef = useRef(googleToken);
   const activeNoteIdRef = useRef<string | null>(null);
@@ -359,6 +369,19 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
 
   const persist = useCallback(
     async (id: string, t: string, body: string) => {
+      const previous = lastServerBodyRef.current;
+      if (isTrivialEmptyHtml(body) && !isTrivialEmptyHtml(previous)) {
+        const ok = window.confirm(
+          "This save will clear all text in the note. If this was an accident, choose Cancel — your previous content stays until you save again. Continue and clear the note on the server?"
+        );
+        if (!ok) {
+          const ed = editorRef.current;
+          if (ed) {
+            ed.commands.setContent(normalizeTaskListHtmlForEditor(previous || "<p></p>"), false);
+          }
+          return;
+        }
+      }
       try {
         const r = await apiSend<{ note: Note }>(
           `/api/notes/${id}`,
@@ -366,15 +389,67 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
           { title: t, body },
           googleToken
         );
-        setNotes((prev) => prev.map((n) => (n.id === id ? r.note : n)));
+        lastServerBodyRef.current = r.note.body;
+        if (isTrivialEmptyHtml(r.note.body)) {
+          clearNoteBodyBackup(userId, id);
+        } else {
+          writeNoteBodyBackup(userId, id, r.note.title, r.note.body);
+        }
+        if (r.note.id === activeNoteIdRef.current) {
+          setLocalBodyBackupHint(null);
+        }
+        setNotes((prev) =>
+          sortNotesNewestFirst(
+            prev.map((n) => (n.id === id ? r.note : n))
+          )
+        );
         setActiveNote((n) => (n?.id === id ? r.note : n));
         bumpNotebookFromSavedNote(r.note);
       } catch (e) {
         setErr(String(e));
       }
     },
-    [googleToken, bumpNotebookFromSavedNote]
+    [googleToken, userId, bumpNotebookFromSavedNote]
   );
+
+  const restoreFromLocalBodyBackup = useCallback(async () => {
+    if (!activeNote || !localBodyBackupHint) return;
+    const body = localBodyBackupHint.body;
+    const t = titleRef.current.trim() || activeNote.title;
+    try {
+      const r = await apiSend<{ note: Note }>(
+        `/api/notes/${activeNote.id}`,
+        "PATCH",
+        { title: t, body },
+        googleToken
+      );
+      lastServerBodyRef.current = r.note.body;
+      writeNoteBodyBackup(userId, r.note.id, r.note.title, r.note.body);
+      setLocalBodyBackupHint(null);
+      setNotes((prev) =>
+        sortNotesNewestFirst(
+          prev.map((n) => (n.id === r.note.id ? r.note : n))
+        )
+      );
+      setActiveNote((n) => (n?.id === r.note.id ? r.note : n));
+      bumpNotebookFromSavedNote(r.note);
+      const ed = editorRef.current;
+      if (ed) {
+        ed.commands.setContent(
+          normalizeTaskListHtmlForEditor(r.note.body || "<p></p>"),
+          false
+        );
+      }
+    } catch (e) {
+      setErr(String(e));
+    }
+  }, [activeNote, localBodyBackupHint, googleToken, userId, bumpNotebookFromSavedNote]);
+
+  const dismissLocalBodyBackup = useCallback(() => {
+    if (!activeNote) return;
+    clearNoteBodyBackup(userId, activeNote.id);
+    setLocalBodyBackupHint(null);
+  }, [activeNote, userId]);
 
   const editor = useEditor(
     {
@@ -505,7 +580,7 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
       `/api/notes?notebookId=${encodeURIComponent(activeNb)}`,
       googleToken
     );
-    setNotes(r.notes);
+    setNotes(sortNotesNewestFirst(r.notes));
   }, [activeNb, googleToken]);
 
   useEffect(() => {
@@ -585,11 +660,32 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
   useEffect(() => {
     if (!activeNote || !editor) return;
     setTitle(activeNote.title);
+    const rawBody = activeNote.body || "<p></p>";
+    lastServerBodyRef.current = activeNote.body || "";
     editor.commands.setContent(
-      normalizeTaskListHtmlForEditor(activeNote.body || "<p></p>"),
+      normalizeTaskListHtmlForEditor(rawBody),
       false
     );
   }, [activeNote?.id, editor]);
+
+  useEffect(() => {
+    if (!activeNote?.id) {
+      setLocalBodyBackupHint(null);
+      return;
+    }
+    const bhtml = activeNote.body || "";
+    if (!isTrivialEmptyHtml(bhtml)) {
+      writeNoteBodyBackup(userId, activeNote.id, activeNote.title, bhtml);
+      setLocalBodyBackupHint(null);
+    } else {
+      const b = readNoteBodyBackup(userId, activeNote.id);
+      if (b && !isTrivialEmptyHtml(b.body)) {
+        setLocalBodyBackupHint(b);
+      } else {
+        setLocalBodyBackupHint(null);
+      }
+    }
+  }, [userId, activeNote?.id, activeNote?.body, activeNote?.title]);
 
   const goBackMobile = useCallback(() => {
     setMobileStep((s) => Math.max(0, s - 1));
@@ -1599,6 +1695,33 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
         {err && (
           <div style={{ color: "var(--danger)" }} role="alert">
             {err}
+          </div>
+        )}
+        {activeNote && localBodyBackupHint && (
+          <div className="note-backup-hint" role="status">
+            <p className="note-backup-hint-text">
+              This note is empty in your account, but this browser kept a local copy from{" "}
+              <time dateTime={localBodyBackupHint.savedAt}>
+                {new Date(localBodyBackupHint.savedAt).toLocaleString()}
+              </time>
+              . You can restore it to the server or discard the local copy.
+            </p>
+            <div className="note-backup-hint-actions">
+              <button
+                type="button"
+                className="btn btn-primary btn-tiny"
+                onClick={() => void restoreFromLocalBodyBackup()}
+              >
+                Restore from this device
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-tiny"
+                onClick={dismissLocalBodyBackup}
+              >
+                Ignore backup
+              </button>
+            </div>
           </div>
         )}
         {activeNote && activeNotebook ? (

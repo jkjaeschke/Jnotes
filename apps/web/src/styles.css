@@ -805,6 +805,28 @@ button.sidebar-nav-link {
   flex-direction: column;
 }
 
+.note-backup-hint {
+  flex-shrink: 0;
+  margin: 0.5rem 0 0;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--panel-bg, var(--bg));
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.note-backup-hint-text {
+  margin: 0 0 0.5rem;
+}
+
+.note-backup-hint-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
 .editor-breadcrumb {
   font-size: 0.85rem;
   color: var(--muted);
