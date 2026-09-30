@@ -1,7 +1,8 @@
 :root {
   color-scheme: light;
   /* ~Chrome 100% → 90% → 80% (two zoom-out steps). Tweak if you want tighter/looser. */
-  zoom: 0.8;
+  --ui-zoom: 0.8;
+  zoom: var(--ui-zoom);
   /* Clean light UI (reference: white panes, gray borders, blue accent) */
   --bg: #ffffff;
   --surface: #ffffff;
@@ -33,6 +34,7 @@
 /* `zoom` on :root breaks or blanks the page on some mobile browsers (esp. Safari). */
 @media (max-width: 960px) {
   :root {
+    --ui-zoom: 1;
     zoom: 1;
   }
 }
@@ -86,8 +88,9 @@ button {
 .app-shell {
   display: grid;
   grid-template-columns: minmax(192px, 220px) minmax(0, 1fr);
-  height: 100dvh;
-  max-height: 100dvh;
+  /* zoom on :root shrinks 100dvh visually; divide so the shell still fills the window. */
+  height: calc(100dvh / var(--ui-zoom));
+  max-height: calc(100dvh / var(--ui-zoom));
   overflow: hidden;
   background: var(--bg);
 }
