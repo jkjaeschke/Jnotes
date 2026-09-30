@@ -86,7 +86,9 @@ button {
 .app-shell {
   display: grid;
   grid-template-columns: minmax(192px, 220px) minmax(0, 1fr);
-  min-height: 100dvh;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
   background: var(--bg);
 }
 
@@ -199,7 +201,8 @@ button {
   display: flex;
   flex-direction: column;
   gap: 0;
-  min-height: 100dvh;
+  min-height: 0;
+  overflow: auto;
 }
 
 .sidebar-brand {
@@ -336,8 +339,11 @@ button.sidebar-nav-link {
 }
 
 .app-main {
-  min-height: 100dvh;
+  min-height: 0;
+  height: 100%;
   overflow: auto;
+  display: flex;
+  flex-direction: column;
   background: var(--bg);
 }
 
@@ -350,7 +356,9 @@ button.sidebar-nav-link {
   display: grid;
   grid-template-columns:
     minmax(128px, 188px) minmax(188px, 268px) minmax(220px, 300px) minmax(0, 1fr);
-  min-height: 100dvh;
+  grid-template-rows: minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: hidden;
   background: var(--bg);
 }
@@ -412,8 +420,9 @@ button.sidebar-nav-link {
 @media (max-width: 960px) {
   .notes-layout {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
-    min-height: calc(100dvh - 48px);
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100%;
+    min-height: 0;
     overflow: hidden;
   }
 
@@ -772,8 +781,8 @@ button.sidebar-nav-link {
 }
 
 .editor-panel {
-  /* Allow absolutely positioned AI / note menus to paint below the toolbar row. */
-  overflow: visible;
+  /* Column stays in the viewport; the note body scrolls inside .ProseMirror. */
+  overflow: hidden;
   padding: 1.25rem 1.25rem 1.5rem;
   display: flex;
   flex-direction: column;

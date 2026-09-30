@@ -237,6 +237,7 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
   /** Last body successfully stored on the server (load or last PATCH) — for wipe detection. */
   const lastServerBodyRef = useRef<string>("");
   const editorRef = useRef<Editor | null>(null);
+  const editorPanelRef = useRef<HTMLElement | null>(null);
   const googleTokenRef = useRef(googleToken);
   const activeNoteIdRef = useRef<string | null>(null);
   /** Keep in sync during render — useEffect runs too late for immediate paste after selecting a note. */
@@ -666,6 +667,14 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
       normalizeTaskListHtmlForEditor(rawBody),
       false
     );
+    const scrollEditorToTop = () => {
+      editorPanelRef.current?.scrollTo({ top: 0 });
+      const dom = editor.view.dom as HTMLElement;
+      dom.scrollTop = 0;
+    };
+    scrollEditorToTop();
+    const frame = requestAnimationFrame(scrollEditorToTop);
+    return () => cancelAnimationFrame(frame);
   }, [activeNote?.id, editor]);
 
   useEffect(() => {
@@ -1691,7 +1700,7 @@ export function MainNotes({ user, googleToken, refreshKey, onNotebooksChanged }:
         ) : null}
       </section>
 
-      <main className="editor-panel" aria-label="Note editor">
+      <main ref={editorPanelRef} className="editor-panel" aria-label="Note editor">
         {err && (
           <div style={{ color: "var(--danger)" }} role="alert">
             {err}
